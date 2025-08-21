@@ -45,47 +45,69 @@ cat-prod-normalize/
 ## 🛠️ Recursos Creados
 
 ### 🐍 Lambda Function
+- **Name**: `cat-prod-lambda-normalize-prod`
 - **Runtime**: Python 3.9
 - **Memoria**: 1024 MB
 - **Timeout**: 15 minutos
-- **Trigger**: Manual/EventBridge (configurable)
+- **Layer**: Dependencias Python incluidas (pandas, boto3, openpyxl, numpy)
+- **Tags**: ProjectId: P0260, Env: PROD, Client: CAT
 
 ### 📦 S3 Bucket
-- **Nombre**: `cat-prod-normalize-reports`
+- **Nombre**: `cat-prod-normalize-reports-prod`
 - **Versionado**: Habilitado
 - **Acceso público**: Bloqueado
+- **Tags**: Aplicados automáticamente
+
+### 📚 Lambda Layer
+- **Nombre**: `cat-prod-lambda-deps-layer-prod`
+- **Runtime**: Python 3.9 compatible
+- **Contenido**: Todas las dependencias Python empaquetadas
+- **Dependencias**: pandas==2.0.3, boto3==1.34.162, openpyxl==3.1.2, numpy==1.24.3
 
 ### 🔐 IAM Role
-- **DynamoDB**: Permisos de lectura (Scan, Query, GetItem)
-- **S3**: Permisos de escritura (PutObject, PutObjectAcl)
-- **CloudWatch**: Logs básicos
+- **Nombre**: `cat-prod-lambda-normalize-role-prod`
+- **DynamoDB**: Permisos de lectura en `cat-prod-catia-conversations-table`
+- **S3**: Permisos de escritura en el bucket de reportes
+- **CloudWatch**: Logs básicos (retención 2 años)
 
 ## 🚀 Instalación y Despliegue
 
 ### Prerrequisitos
 - Node.js >= 18.0.0
-- AWS CLI configurado
-- CDK CLI instalado
+- AWS CLI configurado con cuenta `081899001252`
+- CDK CLI instalado (`npm install -g aws-cdk`)
 
 ### 1. Instalar dependencias
 ```bash
 npm install
 ```
 
-### 2. Compilar TypeScript
+### 2. Configurar archivos (ya incluidos)
+Los archivos de configuración están en `config/`:
+- `accountConfig.json`: Cuenta AWS específica (081899001252)
+- `config.json`: Namespace del proyecto (cat-prod)  
+- `tags.json`: Tags estándar (ProjectId: P0260, Env: PROD, Client: CAT)
+
+### 3. Compilar TypeScript
 ```bash
 npm run build
 ```
 
-### 3. Sintetizar template
+### 4. Sintetizar template
 ```bash
 npx cdk synth
 ```
 
-### 4. Desplegar stack
+### 5. Desplegar stack
 ```bash
 npx cdk deploy
 ```
+
+**Recursos creados con nomenclatura estándar:**
+- 🐍 **Lambda**: `cat-prod-lambda-normalize-prod` (con Layer para dependencias)
+- 📦 **S3**: `cat-prod-normalize-reports-prod`
+- 🔐 **IAM Role**: `cat-prod-lambda-normalize-role-prod`
+- 📚 **Layer**: `cat-prod-lambda-deps-layer-prod`
 
 ## 🔧 Configuración
 

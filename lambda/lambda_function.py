@@ -42,15 +42,30 @@ def lambda_handler(event, context):
         
         # PASO 4: Extraer preguntas
         print("💬 EXTRAYENDO PREGUNTAS DE CONVERSACIONES")
-        df = extraer_preguntas_conversaciones(df)
+        try:
+            df = extraer_preguntas_conversaciones(df)
+            print(f"   • Preguntas extraídas exitosamente")
+        except Exception as e:
+            print(f"   ❌ ERROR en extracción de preguntas: {str(e)}")
+            raise
         
         # PASO 5: Crear dataset con 12 columnas
         print("📋 CREANDO DATASET CON 12 COLUMNAS")
-        df_12_columnas = crear_dataset_12_columnas(df)
+        try:
+            df_12_columnas = crear_dataset_12_columnas(df)
+            print(f"   • Dataset 12 columnas creado: {len(df_12_columnas)} filas")
+        except Exception as e:
+            print(f"   ❌ ERROR en crear dataset 12 columnas: {str(e)}")
+            raise
         
         # PASO 6: Agrupar usuarios únicos
         print("🔄 AGRUPANDO USUARIOS ÚNICOS")
-        df_usuarios_unicos = agrupar_usuarios_unicos(df_12_columnas)
+        try:
+            df_usuarios_unicos = agrupar_usuarios_unicos(df_12_columnas)
+            print(f"   • Usuarios únicos agrupados: {len(df_usuarios_unicos)} usuarios")
+        except Exception as e:
+            print(f"   ❌ ERROR en agrupar usuarios únicos: {str(e)}")
+            raise
         
         # PASO 7: Clasificar feedback
         print("🎯 CLASIFICANDO FEEDBACK")
@@ -64,15 +79,15 @@ def lambda_handler(event, context):
         print("💾 GENERANDO ARCHIVO EXCEL")
         archivo_s3 = generar_archivo_excel(df_usuarios_unicos)
         
-        # Actualizar resultado
+        # Actualizar resultado (convertir int64 a int para JSON serialization)
         result['body'] = {
             'message': 'Proceso completado exitosamente',
-            'usuarios_procesados': len(df_usuarios_unicos),
+            'usuarios_procesados': int(len(df_usuarios_unicos)),
             'archivo_generado': archivo_s3,
             'estadisticas': {
-                'total_conversaciones': df_usuarios_unicos['numero_conversaciones'].sum(),
-                'usuarios_con_feedback': (df_usuarios_unicos['feedback'] != '').sum(),
-                'usuarios_con_preguntas': (df_usuarios_unicos['pregunta_conversacion'] != '').sum()
+                'total_conversaciones': int(df_usuarios_unicos['numero_conversaciones'].sum()),
+                'usuarios_con_feedback': int((df_usuarios_unicos['feedback'] != '').sum()),
+                'usuarios_con_preguntas': int((df_usuarios_unicos['pregunta_conversacion'] != '').sum())
             }
         }
         
@@ -81,6 +96,8 @@ def lambda_handler(event, context):
         
     except Exception as e:
         print(f"❌ ERROR en lambda_handler: {str(e)}")
+        import traceback
+        print(f"❌ TRACEBACK COMPLETO: {traceback.format_exc()}")
         return {
             'statusCode': 500,
             'body': {
@@ -95,7 +112,7 @@ def extraer_datos_dynamodb():
         # Configurar sesión de DynamoDB
         session = boto3.Session()
         dynamodb = session.resource('dynamodb', region_name='us-east-1')
-        table_name = 'cat-prod-catia-conversations-table'
+        table_name = os.environ.get('DYNAMODB_TABLE_NAME', 'cat-prod-catia-conversations-table')
         
         # Obtener referencia a la tabla
         table = dynamodb.Table(table_name)
@@ -164,6 +181,8 @@ def procesar_merge_conversaciones_feedback(df):
 def aplicar_filtros(df):
     """Aplica filtros permisivos al dataset"""
     try:
+        print(f"   📊 Dataset inicial: {len(df)} filas")
+        
         # Procesar UserData
         user_data_parsed = df['UserData'].apply(parse_user_data_clean)
         df_user_data = pd.DataFrame(user_data_parsed.tolist())
@@ -171,47 +190,92 @@ def aplicar_filtros(df):
         df['nombre'] = df_user_data['nombre'].fillna('')
         df['gerencia'] = df_user_data['ciudad'].fillna('')
         
+        # Verificar nombres extraídos
+        nombres_extraidos = (df['nombre'] != '').sum()
+        print(f"   👤 Nombres extraídos del UserData: {nombres_extraidos}/{len(df)}")
+        
         # Renombrar columnas
         df = df.rename(columns={
             'CreatedAt': 'fecha_primera_conversacion',
             'Conversation': 'conversacion_completa'
         })
         
-        # Rellenar nombres vacíos
-        df.loc[df['nombre'] == '', 'nombre'] = 'Usuario Anónimo'
+        # Rellenar nombres vacíos SOLO si realmente están vacíos
+        nombres_vacios = (df['nombre'] == '') | (df['nombre'].isna()) | (df['nombre'] == 'nan')
+        print(f"   🔧 Nombres vacíos a rellenar: {nombres_vacios.sum()}")
+        df.loc[nombres_vacios, 'nombre'] = 'Usuario Anónimo'
         
         # Filtro de ciudad PERMISIVO
+        print(f"   🌍 Aplicando filtro de ciudades...")
         patron_excluir = r'(?i)(mexico|medell|cali|barranquilla|cartagena|potosí|valle|antioquia)'
         df = df[~df['gerencia'].str.contains(patron_excluir, regex=True, na=False)].copy()
-        df.loc[df['gerencia'] == '', 'gerencia'] = 'Bogotá (no especificada)'
+        
+        # Rellenar gerencias vacías SOLO si realmente están vacías
+        gerencias_vacias = (df['gerencia'] == '') | (df['gerencia'].isna())
+        df.loc[gerencias_vacias, 'gerencia'] = 'Bogotá'
+        
+        print(f"   📊 Después de filtro ciudades: {len(df)} filas")
         
         # Filtro de fechas PERMISIVO
+        print(f"   📅 Aplicando filtro de fechas...")
         fecha_inicio = date(2025, 8, 4)
         fecha_fin = date(2025, 8, 20)
         
         df['fecha_temp'] = pd.to_datetime(df['fecha_primera_conversacion'], errors='coerce')
         
         # Incluir fechas del rango Y fechas nulas
-        mask_fechas = (
-            ((df['fecha_temp'].dt.date >= fecha_inicio) & (df['fecha_temp'].dt.date <= fecha_fin)) |
-            df['fecha_temp'].isna()
-        )
+        # Arreglar el problema de arrays ambiguos
+        mask_fechas_validas = df['fecha_temp'].notna()
+        mask_en_rango = pd.Series([False] * len(df), index=df.index)
         
-        df = df[mask_fechas].copy()
+        # Solo aplicar filtro de fechas a las fechas válidas
+        if mask_fechas_validas.any():
+            fechas_validas_idx = df[mask_fechas_validas].index
+            fechas_como_date = df.loc[fechas_validas_idx, 'fecha_temp'].dt.date
+            mask_en_rango.loc[fechas_validas_idx] = (
+                (fechas_como_date >= fecha_inicio) & (fechas_como_date <= fecha_fin)
+            )
+        
+        # Combinar: fechas en rango O fechas nulas
+        mask_fechas_final = mask_en_rango | df['fecha_temp'].isna()
+        
+        df = df[mask_fechas_final].copy()
         df['fecha_primera_conversacion'] = df['fecha_temp'].dt.strftime('%d/%m/%Y')
         df.loc[df['fecha_temp'].isna(), 'fecha_primera_conversacion'] = 'Sin fecha'
         df.drop(columns=['fecha_temp'], inplace=True)
         
+        print(f"   📊 Dataset final después de filtros: {len(df)} filas")
         return df
         
     except Exception as e:
         print(f"❌ ERROR en aplicar_filtros: {str(e)}")
+        import traceback
+        print(f"❌ TRACEBACK: {traceback.format_exc()}")
         raise
 
 def parse_user_data_clean(value):
     """Parsear UserData de forma segura"""
     if pd.isna(value) or value is None:
         return {'nombre': '', 'ciudad': ''}
+    
+    # Si ya es un diccionario Python (como en el Lambda), acceder directamente
+    if isinstance(value, dict):
+        try:
+            nombre = str(value.get('nombre', '')).strip()
+            ciudad = str(value.get('ciudad', value.get('gerencia', ''))).strip()
+            
+            # Limpiar ciudad - remover texto entre paréntesis
+            if '(' in ciudad and ')' in ciudad:
+                ciudad = ciudad.split('(')[0].strip()
+            
+            return {
+                'nombre': nombre,
+                'ciudad': ciudad
+            }
+        except Exception as e:
+            return {'nombre': '', 'ciudad': ''}
+    
+    # Si es string, parsearlo como antes
     if isinstance(value, str):
         value = value.strip()
         if not value or value.lower() in ['nan', 'none', 'null']:
@@ -220,19 +284,37 @@ def parse_user_data_clean(value):
             # Intentar JSON
             result = json.loads(value)
             if isinstance(result, dict):
-                return {
-                    'nombre': result.get('nombre', ''),
-                    'ciudad': result.get('ciudad', result.get('gerencia', ''))
+                nombre = result.get('nombre', '').strip()
+                ciudad = result.get('ciudad', result.get('gerencia', '')).strip()
+                
+                # Limpiar ciudad - remover texto entre paréntesis
+                if '(' in ciudad and ')' in ciudad:
+                    ciudad = ciudad.split('(')[0].strip()
+                
+                parsed_result = {
+                    'nombre': nombre,
+                    'ciudad': ciudad
                 }
+                
+                return parsed_result
         except:
             try:
                 # Intentar literal_eval
                 result = ast.literal_eval(value)
                 if isinstance(result, dict):
-                    return {
-                        'nombre': result.get('nombre', ''),
-                        'ciudad': result.get('ciudad', result.get('gerencia', ''))
+                    nombre = result.get('nombre', '').strip()
+                    ciudad = result.get('ciudad', result.get('gerencia', '')).strip()
+                    
+                    # Limpiar ciudad - remover texto entre paréntesis
+                    if '(' in ciudad and ')' in ciudad:
+                        ciudad = ciudad.split('(')[0].strip()
+                    
+                    parsed_result = {
+                        'nombre': nombre,
+                        'ciudad': ciudad
                     }
+                    
+                    return parsed_result
             except:
                 pass
     return {'nombre': '', 'ciudad': ''}
@@ -240,46 +322,76 @@ def parse_user_data_clean(value):
 def extraer_preguntas_conversaciones(df):
     """Extrae preguntas de usuario desde conversacion_completa"""
     try:
-        df['pregunta_conversacion'] = df['conversacion_completa'].apply(extraer_preguntas_usuario)
-        return df
+        # Crear una copia del DataFrame para evitar problemas de referencia
+        df_copy = df.copy()
+        
+        # Usar un enfoque más simple sin .apply() para evitar array ambiguity
+        preguntas_extraidas = []
+        
+        for idx in range(len(df_copy)):
+            try:
+                conversacion = df_copy.iloc[idx]['conversacion_completa']
+                pregunta = extraer_preguntas_usuario_simple(conversacion)
+                preguntas_extraidas.append(pregunta)
+            except Exception as e:
+                # No imprimir el error para evitar spam, simplemente agregar vacío
+                preguntas_extraidas.append('')
+        
+        df_copy['pregunta_conversacion'] = preguntas_extraidas
+        return df_copy
     except Exception as e:
         print(f"❌ ERROR en extraer_preguntas_conversaciones: {str(e)}")
+        import traceback
+        print(f"❌ TRACEBACK: {traceback.format_exc()}")
         raise
 
-def extraer_preguntas_usuario(conversacion_json):
-    """Extrae todas las preguntas del usuario desde el JSON de conversación"""
-    if pd.isna(conversacion_json) or conversacion_json == '' or conversacion_json is None:
+def extraer_preguntas_usuario_simple(conversacion_json):
+    """Versión simplificada que evita problemas de array ambiguity"""
+    if conversacion_json is None or conversacion_json == '':
         return ''
     
     try:
-        conversacion_str = str(conversacion_json).strip()
+        # Convertir a string de forma segura
+        if isinstance(conversacion_json, list):
+            if len(conversacion_json) == 0:
+                return ''
+            conversacion_str = str(conversacion_json[0]) if conversacion_json else ''
+        else:
+            conversacion_str = str(conversacion_json)
         
-        if not conversacion_str.startswith('[') or not conversacion_str.endswith(']'):
+        # Verificar que es JSON válido
+        if not (conversacion_str.strip().startswith('[') and conversacion_str.strip().endswith(']')):
             return ''
         
-        conversacion_data = json.loads(conversacion_str)
+        # Parsear JSON
+        import json
+        conversacion_data = json.loads(conversacion_str.strip())
         
         if not isinstance(conversacion_data, list):
             return ''
         
+        # Extraer preguntas de usuario
         preguntas_usuario = []
-        
         for mensaje in conversacion_data:
-            if isinstance(mensaje, dict) and 'from' in mensaje and 'text' in mensaje:
-                if mensaje['from'] == 'user':
-                    texto_pregunta = str(mensaje['text']).strip()
-                    if texto_pregunta:
-                        preguntas_usuario.append(texto_pregunta)
+            if (isinstance(mensaje, dict) and 
+                'from' in mensaje and mensaje['from'] == 'user' and 
+                'text' in mensaje):
+                texto_pregunta = str(mensaje['text']).strip()
+                if texto_pregunta:
+                    preguntas_usuario.append(texto_pregunta)
         
         return ' | '.join(preguntas_usuario) if preguntas_usuario else ''
         
-    except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+    except:
+        # Si falla JSON, intentar con ast.literal_eval
         try:
+            import ast
             conversacion_data = ast.literal_eval(conversacion_str)
             if isinstance(conversacion_data, list):
                 preguntas_usuario = []
                 for mensaje in conversacion_data:
-                    if isinstance(mensaje, dict) and mensaje.get('from') == 'user' and 'text' in mensaje:
+                    if (isinstance(mensaje, dict) and 
+                        mensaje.get('from') == 'user' and 'text' in mensaje):
                         texto_pregunta = str(mensaje['text']).strip()
                         if texto_pregunta:
                             preguntas_usuario.append(texto_pregunta)
@@ -304,10 +416,34 @@ def crear_dataset_12_columnas(df):
             if col not in df.columns:
                 df[col] = feedback_df[col]
         
-        # Contar conversaciones
-        df['numero_conversaciones'] = df['conversacion_completa'].apply(
-            lambda x: max(str(x).count('bot'), str(x).count('user')) if pd.notna(x) else 1
-        )
+        # Contar conversaciones de forma segura
+        def contar_conversaciones_seguro(x):
+            """Cuenta conversaciones de forma segura evitando array ambiguity"""
+            try:
+                # Si es NaN, None o vacío, retornar 1
+                if x is None or x == '' or str(x) == 'nan':
+                    return 1
+                
+                # Para arrays o listas, usar solo el primer elemento o convertir a string
+                if isinstance(x, (list, tuple)):
+                    if len(x) == 0:
+                        return 1
+                    x_str = str(x)
+                else:
+                    x_str = str(x)
+                
+                # Contar ocurrencias de bot y user
+                bot_count = x_str.count('bot')
+                user_count = x_str.count('user')
+                
+                # Retornar el máximo o 1 si ambos son 0
+                return max(bot_count, user_count, 1)
+                
+            except Exception as e:
+                print(f"❌ Error contando conversaciones: {e}")
+                return 1
+        
+        df['numero_conversaciones'] = df['conversacion_completa'].apply(contar_conversaciones_seguro)
         
         # Crear DataFrame con las 12 columnas exactas
         df_12_columnas = pd.DataFrame({
@@ -394,26 +530,91 @@ def contar_feedback_total(feedback_text):
 def agrupar_usuarios_unicos(df_12_columnas):
     """Agrupa por usuarios únicos con información completa"""
     try:
+        print(f"   🔧 Iniciando agrupamiento...")
+        def safe_first_non_default(series, default_value):
+            """Obtiene el primer valor que no sea el valor por defecto"""
+            try:
+                non_default = series[series != default_value]
+                if len(non_default) > 0:
+                    return non_default.iloc[0]
+                else:
+                    return series.iloc[0] if len(series) > 0 else default_value
+            except:
+                return series.iloc[0] if len(series) > 0 else default_value
+        
+        def safe_first_non_empty(series, default_value):
+            """Obtiene el primer valor que no esté vacío, MANTENIENDO Usuario Anónimo si es necesario"""
+            try:
+                # Para nombres: Si ya tenemos "Usuario Anónimo", mantenerlo
+                # Solo buscar nombres reales si existen, sino mantener "Usuario Anónimo"
+                if default_value == 'Usuario Anónimo':
+                    # Primero intentar encontrar nombres reales (no vacíos y no "Usuario Anónimo")
+                    nombres_reales = series[
+                        (series != '') & 
+                        (series.notna()) & 
+                        (series != 'nan') &
+                        (series != 'None') &
+                        (series != default_value)
+                    ]
+                    
+                    if len(nombres_reales) > 0:
+                        # Si hay nombres reales, usar el primero
+                        return nombres_reales.iloc[0]
+                    else:
+                        # Si no hay nombres reales, mantener "Usuario Anónimo"
+                        return default_value
+                else:
+                    # Para otros campos, solo filtrar valores no vacíos
+                    valid_values = series[
+                        (series != '') & 
+                        (series.notna()) & 
+                        (series != 'nan') &
+                        (series != 'None')
+                    ]
+                    
+                    if len(valid_values) > 0:
+                        return valid_values.iloc[0]
+                    else:
+                        return default_value
+                        
+            except Exception as e:
+                print(f"   ❌ ERROR en safe_first_non_empty: {str(e)}")
+                return default_value
+        
+        def safe_join_non_empty(series):
+            """Une valores no vacíos de forma segura"""
+            try:
+                non_empty = [str(val) for val in series if str(val) not in ['', 'nan', 'None', 'None']]
+                return ' | '.join(non_empty) if non_empty else ''
+            except:
+                return ''
+        
         aggregation_config = {
-            'nombre': lambda x: x[x != 'Usuario Anónimo'].iloc[0] if len(x[x != 'Usuario Anónimo']) > 0 else 'Usuario Anónimo',
-            'gerencia': lambda x: x[x != 'Bogotá (no especificada)'].iloc[0] if len(x[x != 'Bogotá (no especificada)']) > 0 else x.iloc[0],
-            'ciudad': lambda x: x[x != 'Bogotá (no especificada)'].iloc[0] if len(x[x != 'Bogotá (no especificada)']) > 0 else x.iloc[0],
+            'nombre': lambda x: safe_first_non_empty(x, 'Usuario Anónimo'),
+            'gerencia': lambda x: safe_first_non_empty(x, 'Bogotá (no especificada)'),
+            'ciudad': lambda x: safe_first_non_empty(x, 'Bogotá (no especificada)'),
             'fecha_primera_conversacion': 'first',
             'numero_conversaciones': 'sum',
-            'conversacion_completa': lambda x: ' | '.join([str(conv) for conv in x if str(conv) not in ['', 'nan', 'None']]),
-            'feedback_total': lambda x: ' | '.join([str(f) for f in x if str(f) not in ['', 'nan', 'None']]) if any(str(f) not in ['', 'nan', 'None'] for f in x) else '',
+            'conversacion_completa': safe_join_non_empty,
+            'feedback_total': safe_join_non_empty,
             'numero_feedback': 'sum',
-            'pregunta_conversacion': lambda x: ' | '.join([str(p) for p in x if str(p) not in ['', 'nan', 'None']]) if any(str(p) not in ['', 'nan', 'None'] for p in x) else '',
-            'feedback': lambda x: ' | '.join([str(f) for f in x if str(f) not in ['', 'nan', 'None']]) if any(str(f) not in ['', 'nan', 'None'] for f in x) else '',
-            'respuesta_feedback': lambda x: ' | '.join([str(r) for r in x if str(r) not in ['', 'nan', 'None']]) if any(str(r) not in ['', 'nan', 'None'] for r in x) else ''
+            'pregunta_conversacion': safe_join_non_empty,
+            'feedback': safe_join_non_empty,
+            'respuesta_feedback': safe_join_non_empty
         }
         
         df_usuarios_unicos = df_12_columnas.groupby('usuario_id').agg(aggregation_config).reset_index()
+        
+        # Verificar algunos nombres
+        nombres_reales = (df_usuarios_unicos['nombre'] != 'Usuario Anónimo').sum()
+        print(f"   📊 Nombres reales encontrados: {nombres_reales}/{len(df_usuarios_unicos)}")
         
         return df_usuarios_unicos
         
     except Exception as e:
         print(f"❌ ERROR en agrupar_usuarios_unicos: {str(e)}")
+        import traceback
+        print(f"❌ TRACEBACK: {traceback.format_exc()}")
         raise
 
 def clasificar_feedback(df_usuarios_unicos):
@@ -630,9 +831,8 @@ def generar_archivo_excel(df_usuarios_unicos):
         
         df_usuarios_unicos = df_usuarios_unicos[columnas_finales]
         
-        # Crear archivo Excel en memoria
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        nombre_archivo = f"Dashboard_Usuarios_Catia_{timestamp}_PROCESADO_COMPLETO.xlsx"
+        # Crear archivo Excel con nombre fijo (se sobrescribe)
+        nombre_archivo = "Dashboard_Usuarios_Catia_PROCESADO_COMPLETO.xlsx"
         
         # Crear buffer en memoria
         excel_buffer = io.BytesIO()

@@ -77,13 +77,18 @@ def lambda_handler(event, context):
         
         # PASO 9: Generar archivo Excel
         print("💾 GENERANDO ARCHIVO EXCEL")
-        archivo_s3 = generar_archivo_excel(df_usuarios_unicos)
+        archivo_s3_excel = generar_archivo_excel(df_usuarios_unicos)
+        
+        # PASO 10: Generar Manifest File para QuickSight
+        print("📄 GENERANDO MANIFEST FILE PARA QUICKSIGHT")
+        manifest_url = generar_manifest_file([archivo_s3_excel])
         
         # Actualizar resultado (convertir int64 a int para JSON serialization)
         result['body'] = {
             'message': 'Proceso completado exitosamente',
             'usuarios_procesados': int(len(df_usuarios_unicos)),
-            'archivo_generado': archivo_s3,
+            'archivo_generado': archivo_s3_excel,
+            'manifest_file': manifest_url,
             'estadisticas': {
                 'total_conversaciones': int(df_usuarios_unicos['numero_conversaciones'].sum()),
                 'usuarios_con_feedback': int((df_usuarios_unicos['feedback'] != '').sum()),
@@ -861,4 +866,66 @@ def generar_archivo_excel(df_usuarios_unicos):
         
     except Exception as e:
         print(f"❌ ERROR en generar_archivo_excel: {str(e)}")
+        raise
+
+def generar_manifest_file(file_urls):
+    """
+    Genera un manifest file para QuickSight que apunta a los archivos Excel
+    """
+    try:
+        # Obtener información del bucket
+        bucket_name = os.environ.get('S3_BUCKET_NAME', 'cat-prod-normalize-reports')
+        
+        # Extraer archivos Excel (.xlsx)
+        excel_files = [url for url in file_urls if url.endswith('.xlsx')]
+        
+        print(f"🔍 Archivos Excel encontrados: {excel_files}")
+        
+        # Validar que hay archivos
+        if not excel_files:
+            raise ValueError("No se encontraron archivos Excel para el manifest")
+        
+        # Para archivos Excel, seguir plantilla exacta de QuickSight
+        manifest_content = {
+            "fileLocations": [
+                {
+                    "URIs": excel_files
+                }
+            ],
+            "globalUploadSettings": {
+                "format": "EXCEL",
+                "containsHeader": "true"
+            }
+        }
+        
+        # Convertir a JSON con validación
+        try:
+            manifest_json = json.dumps(manifest_content, indent=2, ensure_ascii=False)
+            # Validar que el JSON se puede parsear de vuelta
+            json.loads(manifest_json)
+            print(f"✅ JSON validado correctamente")
+        except json.JSONDecodeError as je:
+            print(f"❌ Error al generar JSON válido: {je}")
+            raise
+        
+        # Subir manifest a S3
+        s3_client = boto3.client('s3')
+        manifest_key = "manifest.json"
+        
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=manifest_key,
+            Body=manifest_json.encode('utf-8'),
+            ContentType='application/json',
+            ContentEncoding='utf-8'
+        )
+        
+        manifest_url = f"s3://{bucket_name}/{manifest_key}"
+        print(f"✅ Manifest file subido a S3: {manifest_url}")
+        print(f"📄 Manifest content: {manifest_json}")
+        
+        return manifest_url
+        
+    except Exception as e:
+        print(f"❌ ERROR en generar_manifest_file: {str(e)}")
         raise

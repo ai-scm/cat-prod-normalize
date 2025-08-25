@@ -1,9 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
-import * as path from 'path';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
@@ -22,13 +20,11 @@ export class CatProdNormalizeStack extends cdk.Stack {
       s3BucketName: 'cat-prod-normalize-reports',
       dynamoTableName: 'cat-prod-catia-conversations-table',
       etlLambdaName: 'cat-prod-lambda-normalize',
-      quicksightDatasetId: 'Dataset_prueba',
-      quicksightDatasetName: 'Dataset_prueba',
       schedule: {
-        minute: '0',
-        hour: '13', // 8:00 AM Colombia = 1:00 PM UTC (UTC-5)
-        cronExpression: 'cron(0 13 * * ? *)',
-        description: 'Todos los días a las 8:00 AM Colombia (1:00 PM UTC)'
+  minute: '30',
+  hour: '4', // 11:30 PM Colombia = 4:30 AM UTC (UTC-5)
+  cronExpression: 'cron(30 4 * * ? *)',
+  description: 'Todos los días a las 11:30 PM Colombia (4:30 AM UTC)'
       }
     };
 
@@ -37,7 +33,6 @@ export class CatProdNormalizeStack extends cdk.Stack {
 
     // 🔐 IAM Roles
     const etlLambdaRole = this.createETLLambdaRole(reportsBucket, config.dynamoTableName);
-    const quicksightLambdaRole = this.createQuickSightLambdaRole(reportsBucket);
 
     // 📦 Create Lambda Layer for Python dependencies using public ARN
     const pythonLayer = lambda.LayerVersion.fromLayerVersionArn(
@@ -49,40 +44,13 @@ export class CatProdNormalizeStack extends cdk.Stack {
     // ⚡ Lambda ETL
     const etlLambda = this.createETLLambda(etlLambdaRole, reportsBucket, config, pythonLayer);
 
-    // ⚡ Lambda QuickSight Updater
-    const quicksightLambda = new lambda.Function(this, 'QuickSightUpdaterLambda', {
-      runtime: lambda.Runtime.PYTHON_3_9,
-      functionName: 'cat-prod-quicksight-updater',
-      handler: 'quicksight_updater.lambda_handler',
-      code: lambda.Code.fromAsset('lambda-quicksight', {
-        exclude: ['requirements.txt', '*.pyc', '__pycache__']
-      }),
-      layers: [pythonLayer],
-      role: quicksightLambdaRole,
-      timeout: cdk.Duration.minutes(5),
-      memorySize: 512,
-      environment: {
-        QUICKSIGHT_DATASET_ID: config.quicksightDatasetId,
-        QUICKSIGHT_DATASET_NAME: config.quicksightDatasetName,
-        QUICKSIGHT_DASHBOARD_ID: 'Dashboard_prueba',
-        AWS_ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
-        S3_BUCKET_NAME: reportsBucket.bucketName
-      },
-      description: 'Función Lambda para actualizar dataset y dashboard de QuickSight automáticamente'
-    });
-
-    // Apply tags to Lambda functions and layer
+  // Apply tags to Lambda ETL and layer
     cdk.Tags.of(etlLambda).add('Name', 'cat-prod-lambda-normalize');
     cdk.Tags.of(etlLambda).add('Component', 'lambda-function');
     cdk.Tags.of(etlLambda).add('Purpose', 'data-processing');
     cdk.Tags.of(etlLambda).add('Runtime', 'python3.9');
 
-    cdk.Tags.of(quicksightLambda).add('Name', 'cat-prod-quicksight-updater');
-    cdk.Tags.of(quicksightLambda).add('Component', 'lambda-function');
-    cdk.Tags.of(quicksightLambda).add('Purpose', 'quicksight-automation');
-    cdk.Tags.of(quicksightLambda).add('Runtime', 'python3.9');
-
-    // 🕐 TRIGGER 1: EventBridge Schedule - Ejecutar ETL diariamente a las 8:00 AM Colombia
+  // 🕐 TRIGGER 1: EventBridge Schedule - Ejecutar ETL diariamente a las 11:30 PM Colombia
     const dailyETLSchedule = new events.Rule(this, 'DailyETLSchedule', {
       ruleName: 'cat-prod-daily-etl-schedule',
       description: config.schedule.description,
@@ -96,25 +64,6 @@ export class CatProdNormalizeStack extends cdk.Stack {
       retryAttempts: 2
     }));
 
-    // 📁 TRIGGER 2: S3 Event - Ejecutar QuickSight updater cuando se actualice S3
-    reportsBucket.addEventNotification(
-      s3.EventType.OBJECT_CREATED,
-      new s3n.LambdaDestination(quicksightLambda),
-      {
-        prefix: 'reports/',
-        suffix: '.xlsx'
-      }
-    );
-
-    // También trigger para archivos CSV
-    reportsBucket.addEventNotification(
-      s3.EventType.OBJECT_CREATED,
-      new s3n.LambdaDestination(quicksightLambda),
-      {
-        prefix: 'reports/',
-        suffix: '.csv'
-      }
-    );
 
     // 📤 Stack Outputs básicos
     new cdk.CfnOutput(this, 'LambdaFunctionName', {
@@ -127,11 +76,6 @@ export class CatProdNormalizeStack extends cdk.Stack {
       description: 'Nombre del bucket S3 para reportes'
     });
 
-    new cdk.CfnOutput(this, 'QuickSightLambdaName', {
-      value: quicksightLambda.functionName,
-      description: 'Nombre de la función Lambda QuickSight Updater'
-    });
-
     new cdk.CfnOutput(this, 'PythonLayerArn', {
       value: 'arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python39:13',
       description: 'ARN del Lambda Layer público con dependencias Python (AWS SDK, Pandas, Numpy)'
@@ -139,12 +83,12 @@ export class CatProdNormalizeStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'DailyScheduleRule', {
       value: dailyETLSchedule.ruleName,
-      description: 'EventBridge Rule para ejecutar ETL diariamente a las 8:00 AM Colombia'
+  description: 'EventBridge Rule para ejecutar ETL diariamente a las 11:30 PM Colombia'
     });
 
     new cdk.CfnOutput(this, 'AutomationWorkflow', {
-      value: 'EventBridge Schedule → Lambda ETL → S3 Update → Lambda QuickSight → Dashboard Refresh',
-      description: 'Flujo de automatización completo configurado'
+      value: 'EventBridge Schedule → Lambda ETL → S3 Update',
+      description: 'Flujo de automatización configurado (QuickSight removido)'
     });
   }
 
@@ -195,37 +139,6 @@ export class CatProdNormalizeStack extends cdk.Stack {
     });
   }
 
-  // 🔐 Crear IAM Role para Lambda QuickSight
-  private createQuickSightLambdaRole(bucket: s3.Bucket): iam.Role {
-    return new iam.Role(this, 'CatProdNormalizeQuickSightLambdaRole', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
-      ],
-      inlinePolicies: {
-        QuickSightAccess: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                'quicksight:CreateIngestion',
-                'quicksight:DescribeIngestion',
-                'quicksight:ListIngestions',
-                'quicksight:DescribeDataSet',
-                'quicksight:DescribeDashboard'
-              ],
-              resources: ['*']
-            }),
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ['s3:GetObject', 's3:ListBucket'],
-              resources: [bucket.bucketArn, `${bucket.bucketArn}/*`]
-            })
-          ]
-        })
-      }
-    });
-  }
 
   // ⚡ Crear Lambda ETL principal
   private createETLLambda(role: iam.Role, bucket: s3.Bucket, config: any, pythonLayer: lambda.ILayerVersion): lambda.Function {

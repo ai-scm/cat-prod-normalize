@@ -8,9 +8,16 @@ import os
 from collections import Counter
 import re
 
+# Columnas finales requeridas (orden exacto para el CSV)
+COLUMNAS_FINALES_12 = [
+    'usuario_id', 'nombre', 'gerencia', 'ciudad', 'fecha_primera_conversacion',
+    'numero_conversaciones', 'conversacion_completa', 'feedback_total',
+    'numero_feedback', 'pregunta_conversacion', 'feedback', 'respuesta_feedback'
+]
+
 def lambda_handler(event, context):
     """
-    Función Lambda para procesar datos de DynamoDB y generar archivo Excel normalizado
+    Función Lambda para procesar datos de DynamoDB y generar archivo CSV normalizado
     """
     try:
         # Inicializar resultado
@@ -70,24 +77,28 @@ def lambda_handler(event, context):
         # PASO 7: Clasificar feedback
         print("🎯 CLASIFICANDO FEEDBACK")
         df_usuarios_unicos = clasificar_feedback(df_usuarios_unicos)
-        
+
         # PASO 8: Extraer respuestas de feedback
         print("💬 EXTRAYENDO RESPUESTAS DE FEEDBACK")
         df_usuarios_unicos = extraer_respuestas_feedback(df_usuarios_unicos)
-        
-        # PASO 9: Generar archivo Excel
-        print("💾 GENERANDO ARCHIVO EXCEL")
-        archivo_s3_excel = generar_archivo_excel(df_usuarios_unicos)
-        
-        # PASO 10: Generar Manifest File para QuickSight
-        print("📄 GENERANDO MANIFEST FILE PARA QUICKSIGHT")
-        manifest_url = generar_manifest_file([archivo_s3_excel])
-        
+
+        # PASO 9: Validar / ordenar columnas finales
+        print("🧪 VALIDANDO COLUMNAS FINALES")
+        df_usuarios_unicos = validar_y_ordenar_columnas_finales(df_usuarios_unicos)
+
+        # PASO 10: Generar archivo CSV
+        print("💾 GENERANDO ARCHIVO CSV")
+        archivo_s3_csv = generar_archivo_csv(df_usuarios_unicos)
+
+        # PASO 11: Generar Manifest File para QuickSight (CSV)
+        print("📄 GENERANDO MANIFEST FILE PARA QUICKSIGHT (CSV)")
+        manifest_url = generar_manifest_file([archivo_s3_csv])
+
         # Actualizar resultado (convertir int64 a int para JSON serialization)
         result['body'] = {
             'message': 'Proceso completado exitosamente',
             'usuarios_procesados': int(len(df_usuarios_unicos)),
-            'archivo_generado': archivo_s3_excel,
+            'archivo_generado': archivo_s3_csv,
             'manifest_file': manifest_url,
             'estadisticas': {
                 'total_conversaciones': int(df_usuarios_unicos['numero_conversaciones'].sum()),
@@ -95,7 +106,7 @@ def lambda_handler(event, context):
                 'usuarios_con_preguntas': int((df_usuarios_unicos['pregunta_conversacion'] != '').sum())
             }
         }
-        
+
         print(f"✅ PROCESO COMPLETADO - {len(df_usuarios_unicos)} usuarios procesados")
         return result
         
@@ -824,94 +835,92 @@ def limpiar_respuesta_feedback(respuesta_feedback):
     except Exception:
         return str(respuesta_feedback) if respuesta_feedback else ''
 
-def generar_archivo_excel(df_usuarios_unicos):
-    """Genera archivo Excel y lo sube a S3"""
+def validar_y_ordenar_columnas_finales(df):
+    """Valida que existan las 12 columnas requeridas, crea faltantes vacías y ordena exactamente."""
     try:
-        # Asegurar orden de columnas
+        columnas_actuales = list(df.columns)
+        faltantes = [c for c in COLUMNAS_FINALES_12 if c not in columnas_actuales]
+        if faltantes:
+            print(f"⚠️ Columnas faltantes agregadas vacías: {faltantes}")
+            for c in faltantes:
+                df[c] = ''
+        # Reordenar estrictamente
+        df = df[COLUMNAS_FINALES_12]
+        # Verificación final
+        if list(df.columns) == COLUMNAS_FINALES_12:
+            print("✅ Columnas validadas y ordenadas correctamente")
+        else:
+            print("❌ No se logró ordenar correctamente las columnas")
+        return df
+    except Exception as e:
+        print(f"❌ ERROR en validar_y_ordenar_columnas_finales: {str(e)}")
+        raise
+
+def generar_archivo_csv(df_usuarios_unicos):
+    """Genera archivo CSV y lo sube a S3"""
+    try:
         columnas_finales = [
             'usuario_id', 'nombre', 'gerencia', 'ciudad', 'fecha_primera_conversacion',
             'numero_conversaciones', 'conversacion_completa', 'feedback_total',
             'numero_feedback', 'pregunta_conversacion', 'feedback', 'respuesta_feedback'
         ]
-        
         df_usuarios_unicos = df_usuarios_unicos[columnas_finales]
-        
-        # Crear archivo Excel con nombre fijo (se sobrescribe)
-        nombre_archivo = "Dashboard_Usuarios_Catia_PROCESADO_COMPLETO.xlsx"
-        
-        # Crear buffer en memoria
-        excel_buffer = io.BytesIO()
-        
-        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-            df_usuarios_unicos.to_excel(writer, sheet_name='Dashboard_Usuarios_Procesado', index=False)
-        
-        excel_buffer.seek(0)
-        
-        # Subir a S3
+
+        nombre_archivo = "Dashboard_Usuarios_Catia_PROCESADO_COMPLETO.csv"
+
+        csv_buffer = io.StringIO()
+        # Usar utf-8-sig para que Excel (si se abre manualmente) detecte bien caracteres
+        df_usuarios_unicos.to_csv(csv_buffer, index=False, encoding='utf-8')
+        csv_buffer.seek(0)
+
         s3_client = boto3.client('s3')
         bucket_name = os.environ.get('S3_BUCKET_NAME', 'cat-prod-normalize-reports')
         s3_key = f"reports/{nombre_archivo}"
-        
-        s3_client.upload_fileobj(
-            excel_buffer,
-            bucket_name,
-            s3_key,
-            ExtraArgs={'ContentType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}
+
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=s3_key,
+            Body=csv_buffer.getvalue().encode('utf-8'),
+            ContentType='text/csv',
+            ContentEncoding='utf-8'
         )
-        
+
         s3_url = f"s3://{bucket_name}/{s3_key}"
-        print(f"✅ Archivo subido a S3: {s3_url}")
-        
+        print(f"✅ Archivo CSV subido a S3: {s3_url}")
         return s3_url
-        
     except Exception as e:
-        print(f"❌ ERROR en generar_archivo_excel: {str(e)}")
+        print(f"❌ ERROR en generar_archivo_csv: {str(e)}")
         raise
 
 def generar_manifest_file(file_urls):
-    """
-    Genera un manifest file para QuickSight que apunta a los archivos Excel
-    """
+    """Genera un manifest file para QuickSight que apunta a archivos CSV"""
     try:
-        # Obtener información del bucket
         bucket_name = os.environ.get('S3_BUCKET_NAME', 'cat-prod-normalize-reports')
-        
-        # Extraer archivos Excel (.xlsx)
-        excel_files = [url for url in file_urls if url.endswith('.xlsx')]
-        
-        print(f"🔍 Archivos Excel encontrados: {excel_files}")
-        
-        # Validar que hay archivos
-        if not excel_files:
-            raise ValueError("No se encontraron archivos Excel para el manifest")
-        
-        # Para archivos Excel, seguir plantilla exacta de QuickSight
+        csv_files = [url for url in file_urls if url.endswith('.csv')]
+        print(f"🔍 Archivos CSV encontrados: {csv_files}")
+        if not csv_files:
+            raise ValueError("No se encontraron archivos CSV para el manifest")
+
         manifest_content = {
             "fileLocations": [
-                {
-                    "URIs": excel_files
-                }
+                {"URIs": csv_files}
             ],
             "globalUploadSettings": {
-                "format": "EXCEL",
+                "format": "CSV",
                 "containsHeader": "true"
             }
         }
-        
-        # Convertir a JSON con validación
+
         try:
             manifest_json = json.dumps(manifest_content, indent=2, ensure_ascii=False)
-            # Validar que el JSON se puede parsear de vuelta
             json.loads(manifest_json)
-            print(f"✅ JSON validado correctamente")
+            print("✅ JSON validado correctamente")
         except json.JSONDecodeError as je:
             print(f"❌ Error al generar JSON válido: {je}")
             raise
-        
-        # Subir manifest a S3
+
         s3_client = boto3.client('s3')
         manifest_key = "manifest.json"
-        
         s3_client.put_object(
             Bucket=bucket_name,
             Key=manifest_key,
@@ -919,13 +928,11 @@ def generar_manifest_file(file_urls):
             ContentType='application/json',
             ContentEncoding='utf-8'
         )
-        
+
         manifest_url = f"s3://{bucket_name}/{manifest_key}"
-        print(f"✅ Manifest file subido a S3: {manifest_url}")
+        print(f"✅ Manifest file (CSV) subido a S3: {manifest_url}")
         print(f"📄 Manifest content: {manifest_json}")
-        
         return manifest_url
-        
     except Exception as e:
         print(f"❌ ERROR en generar_manifest_file: {str(e)}")
         raise

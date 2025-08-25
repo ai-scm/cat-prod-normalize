@@ -37,26 +37,31 @@ def lambda_handler(event, context):
         df = extraer_datos_dynamodb()
         print(f"   • Total filas extraídas: {len(df)}")
         
-        # PASO 2: Procesar y normalizar datos
+        # PASO 2: Deserializar datos de DynamoDB
+        df = deserializar_datos_dynamodb(df)
+        
+        # PASO 3: Procesar y normalizar datos
         print("🔗 PROCESANDO MERGE DE CONVERSACIONES Y FEEDBACK")
         df = procesar_merge_conversaciones_feedback(df)
         print(f"   • Después del merge: {len(df)} filas")
         
-        # PASO 3: Aplicar filtros
+        # PASO 4: Aplicar filtros
         print("🔧 APLICANDO FILTROS")
         df = aplicar_filtros(df)
         print(f"   • Después de filtros: {len(df)} filas")
         
-        # PASO 4: Extraer preguntas
+        # PASO 5: Extraer preguntas
         print("💬 EXTRAYENDO PREGUNTAS DE CONVERSACIONES")
         try:
+            # VERSIÓN MEJORADA: Implementa la función del notebook que maneja mejor múltiples preguntas
+            # separadas por ' | ' y tiene mejor manejo de errores para JSON complejos
             df = extraer_preguntas_conversaciones(df)
             print(f"   • Preguntas extraídas exitosamente")
         except Exception as e:
             print(f"   ❌ ERROR en extracción de preguntas: {str(e)}")
             raise
         
-        # PASO 5: Crear dataset con 12 columnas
+        # PASO 6: Crear dataset con 12 columnas
         print("📋 CREANDO DATASET CON 12 COLUMNAS")
         try:
             df_12_columnas = crear_dataset_12_columnas(df)
@@ -65,7 +70,7 @@ def lambda_handler(event, context):
             print(f"   ❌ ERROR en crear dataset 12 columnas: {str(e)}")
             raise
         
-        # PASO 6: Agrupar usuarios únicos
+        # PASO 7: Agrupar usuarios únicos
         print("🔄 AGRUPANDO USUARIOS ÚNICOS")
         try:
             df_usuarios_unicos = agrupar_usuarios_unicos(df_12_columnas)
@@ -74,23 +79,23 @@ def lambda_handler(event, context):
             print(f"   ❌ ERROR en agrupar usuarios únicos: {str(e)}")
             raise
         
-        # PASO 7: Clasificar feedback
+        # PASO 8: Clasificar feedback
         print("🎯 CLASIFICANDO FEEDBACK")
         df_usuarios_unicos = clasificar_feedback(df_usuarios_unicos)
 
-        # PASO 8: Extraer respuestas de feedback
+        # PASO 9: Extraer respuestas de feedback
         print("💬 EXTRAYENDO RESPUESTAS DE FEEDBACK")
         df_usuarios_unicos = extraer_respuestas_feedback(df_usuarios_unicos)
 
-        # PASO 9: Validar / ordenar columnas finales
+        # PASO 10: Validar / ordenar columnas finales
         print("🧪 VALIDANDO COLUMNAS FINALES")
         df_usuarios_unicos = validar_y_ordenar_columnas_finales(df_usuarios_unicos)
 
-        # PASO 10: Generar archivo CSV
+        # PASO 11: Generar archivo CSV
         print("💾 GENERANDO ARCHIVO CSV")
         archivo_s3_csv = generar_archivo_csv(df_usuarios_unicos)
 
-        # PASO 11: Generar Manifest File para QuickSight (CSV)
+        # PASO 12: Generar Manifest File para QuickSight (CSV)
         print("📄 GENERANDO MANIFEST FILE PARA QUICKSIGHT (CSV)")
         manifest_url = generar_manifest_file([archivo_s3_csv])
 
@@ -154,6 +159,68 @@ def extraer_datos_dynamodb():
     except Exception as e:
         print(f"❌ ERROR en extraer_datos_dynamodb: {str(e)}")
         raise
+
+def deserializar_datos_dynamodb(df):
+    """
+    Convierte datos de formato DynamoDB JSON a formato normal
+    DynamoDB devuelve: {'S': 'valor'} -> 'valor'
+    """
+    try:
+        print("   🔄 Deserializando datos de DynamoDB...")
+        
+        # Columnas que típicamente vienen en formato DynamoDB
+        columnas_a_deserializar = ['Conversation', 'UserData', 'Feedback', 'CreatedAt']
+        
+        for columna in columnas_a_deserializar:
+            if columna in df.columns:
+                df[columna] = df[columna].apply(deserializar_valor_dynamodb)
+        
+        print("   ✅ Datos deserializados exitosamente")
+        return df
+        
+    except Exception as e:
+        print(f"   ❌ ERROR deserializando datos: {str(e)}")
+        return df
+
+def deserializar_valor_dynamodb(valor):
+    """
+    Convierte un valor de formato DynamoDB a formato normal
+    """
+    # Manejar arrays/listas de pandas de forma segura
+    if hasattr(valor, '__len__') and not isinstance(valor, (str, bytes, dict)):
+        try:
+            if len(valor) == 0:
+                return None
+            # Si es un array/Series, tomar el primer elemento
+            valor = valor[0] if len(valor) > 0 else None
+        except:
+            pass
+    
+    # Verificar nulos de forma segura
+    try:
+        if pd.isna(valor) or valor is None:
+            return valor
+    except (ValueError, TypeError):
+        if valor is None:
+            return valor
+    
+    # Si es un diccionario con formato DynamoDB
+    if isinstance(valor, dict):
+        # Formato típico de DynamoDB: {'S': 'string_value'} o {'N': 'number_value'}
+        if 'S' in valor:  # String
+            return valor['S']
+        elif 'N' in valor:  # Number
+            return valor['N']
+        elif 'BOOL' in valor:  # Boolean
+            return valor['BOOL']
+        elif 'NULL' in valor:  # Null
+            return None
+        else:
+            # Si tiene otras claves, intentar convertir todo
+            return str(valor)
+    
+    # Si no es diccionario, devolver tal como está
+    return valor
 
 def procesar_merge_conversaciones_feedback(df):
     """Procesa el merge de conversaciones y feedback"""
@@ -235,7 +302,7 @@ def aplicar_filtros(df):
         # Filtro de fechas PERMISIVO
         print(f"   📅 Aplicando filtro de fechas...")
         fecha_inicio = date(2025, 8, 4)
-        fecha_fin = date(2025, 8, 20)
+        fecha_fin = date.today()  # Usar fecha actual en lugar de fecha fija
         
         df['fecha_temp'] = pd.to_datetime(df['fecha_primera_conversacion'], errors='coerce')
         
@@ -335,87 +402,288 @@ def parse_user_data_clean(value):
                 pass
     return {'nombre': '', 'ciudad': ''}
 
-def extraer_preguntas_conversaciones(df):
-    """Extrae preguntas de usuario desde conversacion_completa"""
+def limpiar_conversacion_texto(texto):
+    """
+    Limpia y normaliza el texto de conversación para mejorar el parsing
+    """
+    if not texto or pd.isna(texto):
+        return ''
+    
+    texto = str(texto).strip()
+    
+    # Eliminar caracteres problemáticos
+    texto = texto.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+    
+    # Normalizar espacios múltiples
+    while '  ' in texto:
+        texto = texto.replace('  ', ' ')
+    
+    # Normalizar separadores de pipe
+    texto = texto.replace('|', ' | ')  # Asegurar espacios alrededor de pipes
+    while ' |  | ' in texto:  # Corregir espacios dobles después de la normalización
+        texto = texto.replace(' |  | ', ' | ')
+    
+    return texto.strip()
+
+def extraer_preguntas_usuario(conversacion_json):
+    """
+    Extrae todas las preguntas del usuario desde el JSON de conversación
+    Maneja tanto formato array JSON como formato pipe-separated objects
+    
+    Args:
+        conversacion_json (str): JSON con la conversación completa o objetos separados por pipe
+        
+    Returns:
+        str: Preguntas del usuario separadas por ' | '
+    """
     try:
-        # Crear una copia del DataFrame para evitar problemas de referencia
-        df_copy = df.copy()
+        # Manejo seguro de valores nulos/vacíos para arrays
+        if conversacion_json is None:
+            return ''
         
-        # Usar un enfoque más simple sin .apply() para evitar array ambiguity
-        preguntas_extraidas = []
-        
-        for idx in range(len(df_copy)):
+        # Si es un array/Series/numpy array, manejar de forma segura
+        if hasattr(conversacion_json, '__len__') and not isinstance(conversacion_json, (str, bytes)):
             try:
-                conversacion = df_copy.iloc[idx]['conversacion_completa']
-                pregunta = extraer_preguntas_usuario_simple(conversacion)
-                preguntas_extraidas.append(pregunta)
-            except Exception as e:
-                # No imprimir el error para evitar spam, simplemente agregar vacío
-                preguntas_extraidas.append('')
+                # Convertir a lista si es un array numpy/pandas para evitar errores de ambigüedad
+                if hasattr(conversacion_json, 'tolist'):
+                    conversacion_json = conversacion_json.tolist()
+                elif hasattr(conversacion_json, 'iloc'):
+                    # Si es una Serie de pandas, tomar el primer valor
+                    conversacion_json = conversacion_json.iloc[0] if len(conversacion_json) > 0 else ''
+                else:
+                    # Si es una lista/tupla regular
+                    conversacion_json = conversacion_json[0] if len(conversacion_json) > 0 else ''
+            except (IndexError, ValueError, TypeError) as e:
+                print(f"   ⚠️  Error manejando array/series: {e}")
+                return ''
         
-        df_copy['pregunta_conversacion'] = preguntas_extraidas
-        return df_copy
+        # Verificar si es NaN usando numpy/pandas de forma segura
+        try:
+            if pd.isna(conversacion_json):
+                return ''
+        except (ValueError, TypeError):
+            # Si pd.isna falla, continuar con otras validaciones
+            pass
+        
+        # Convertir a string y verificar si está vacío
+        conversacion_str = str(conversacion_json).strip()
+        if not conversacion_str or conversacion_str in ['', 'nan', 'None', 'null']:
+            return ''
+        
+        # Limpiar y normalizar el texto de la conversación
+        conversacion_str = limpiar_conversacion_texto(conversacion_str)
+        
+        preguntas_usuario = []
+        
+        # CASO 1: Formato pipe-separated objects: {'from': 'user', 'text': '...'} | {'from': 'bot', 'text': '...'}
+        # Detectar formato pipe-separated: contiene ' | ' pero NO es un array JSON
+        if ' | ' in conversacion_str and not (conversacion_str.startswith('[') and conversacion_str.endswith(']')):
+            try:
+                print(f"   🔍 Procesando formato pipe-separated: {conversacion_str[:100]}...")
+                
+                # Dividir por pipe y procesar cada objeto
+                objetos = conversacion_str.split(' | ')
+                
+                for i, objeto_str in enumerate(objetos):
+                    objeto_str = objeto_str.strip()
+                    if not objeto_str:
+                        continue
+                    
+                    print(f"   📦 Procesando objeto {i+1}: {objeto_str[:80]}...")
+                    
+                    # Intentar múltiples estrategias de parsing
+                    objeto_parseado = None
+                    
+                    # Estrategia 1: JSON estándar (reemplazar comillas simples por dobles)
+                    try:
+                        objeto_json_str = objeto_str.replace("'", '"')
+                        objeto_parseado = json.loads(objeto_json_str)
+                    except json.JSONDecodeError:
+                        pass
+                    
+                    # Estrategia 2: ast.literal_eval (maneja comillas simples nativas)
+                    if objeto_parseado is None:
+                        try:
+                            objeto_parseado = ast.literal_eval(objeto_str)
+                        except (ValueError, SyntaxError):
+                            pass
+                    
+                    # Estrategia 3: eval como último recurso (con precaución)
+                    if objeto_parseado is None and objeto_str.startswith('{') and objeto_str.endswith('}'):
+                        try:
+                            # Solo usar eval si parece ser un dict simple y seguro
+                            if all(char not in objeto_str for char in ['import', 'exec', 'eval', '__']):
+                                objeto_parseado = eval(objeto_str)
+                        except Exception:
+                            pass
+                    
+                    # Procesar el objeto parseado
+                    if isinstance(objeto_parseado, dict):
+                        # Verificar diferentes variantes de claves
+                        from_key = objeto_parseado.get('from') or objeto_parseado.get('From') 
+                        text_key = objeto_parseado.get('text') or objeto_parseado.get('Text') or objeto_parseado.get('message')
+                        
+                        if from_key == 'user' and text_key:
+                            texto_pregunta = str(text_key).strip()
+                            if texto_pregunta and texto_pregunta not in preguntas_usuario:
+                                preguntas_usuario.append(texto_pregunta)
+                                print(f"   ✅ Pregunta extraída: {texto_pregunta[:60]}...")
+                    else:
+                        print(f"   ⚠️  No se pudo parsear objeto {i+1}: {objeto_str[:50]}...")
+                
+                resultado = ' | '.join(preguntas_usuario) if preguntas_usuario else ''
+                print(f"   📝 Total preguntas extraídas del pipe: {len(preguntas_usuario)}")
+                return resultado
+                
+            except Exception as e:
+                print(f"   ❌ Error procesando formato pipe: {e}")
+                pass
+        
+        # CASO 2: Formato JSON array: [{'from': 'user', 'text': '...'}, ...]
+        elif conversacion_str.startswith('[') and conversacion_str.endswith(']'):
+            try:
+                print(f"   🔍 Procesando formato JSON array: {conversacion_str[:100]}...")
+                
+                conversacion_data = None
+                
+                # Intentar parsing JSON estándar
+                try:
+                    conversacion_data = json.loads(conversacion_str)
+                except json.JSONDecodeError:
+                    # Si falla, intentar con ast.literal_eval
+                    try:
+                        conversacion_data = ast.literal_eval(conversacion_str)
+                    except (ValueError, SyntaxError):
+                        pass
+                
+                # Procesar la lista de conversaciones
+                if isinstance(conversacion_data, list):
+                    for i, mensaje in enumerate(conversacion_data):
+                        if isinstance(mensaje, dict):
+                            # Verificar diferentes variantes de claves
+                            from_key = mensaje.get('from') or mensaje.get('From')
+                            text_key = mensaje.get('text') or mensaje.get('Text') or mensaje.get('message')
+                            
+                            if from_key == 'user' and text_key:
+                                texto_pregunta = str(text_key).strip()
+                                if texto_pregunta and texto_pregunta not in preguntas_usuario:
+                                    preguntas_usuario.append(texto_pregunta)
+                                    print(f"   ✅ Pregunta extraída del array: {texto_pregunta[:60]}...")
+                    
+                    resultado = ' | '.join(preguntas_usuario) if preguntas_usuario else ''
+                    print(f"   📝 Total preguntas extraídas del array: {len(preguntas_usuario)}")
+                    return resultado
+                    
+            except Exception as e:
+                print(f"   ❌ Error procesando formato JSON array: {e}")
+                pass
+        
+        # CASO 3: Intentar detectar si es un solo objeto JSON (sin array ni pipe)
+        elif conversacion_str.startswith('{') and conversacion_str.endswith('}'):
+            try:
+                print(f"   🔍 Procesando objeto JSON individual: {conversacion_str[:100]}...")
+                
+                objeto_parseado = None
+                
+                # Intentar múltiples estrategias de parsing
+                try:
+                    objeto_json_str = conversacion_str.replace("'", '"')
+                    objeto_parseado = json.loads(objeto_json_str)
+                except json.JSONDecodeError:
+                    try:
+                        objeto_parseado = ast.literal_eval(conversacion_str)
+                    except (ValueError, SyntaxError):
+                        pass
+                
+                if isinstance(objeto_parseado, dict):
+                    from_key = objeto_parseado.get('from') or objeto_parseado.get('From')
+                    text_key = objeto_parseado.get('text') or objeto_parseado.get('Text') or objeto_parseado.get('message')
+                    
+                    if from_key == 'user' and text_key:
+                        texto_pregunta = str(text_key).strip()
+                        if texto_pregunta:
+                            preguntas_usuario.append(texto_pregunta)
+                            print(f"   ✅ Pregunta extraída del objeto: {texto_pregunta[:60]}...")
+                
+                resultado = ' | '.join(preguntas_usuario) if preguntas_usuario else ''
+                print(f"   📝 Total preguntas extraídas del objeto: {len(preguntas_usuario)}")
+                return resultado
+                
+            except Exception as e:
+                print(f"   ❌ Error procesando objeto JSON individual: {e}")
+                pass
+        
+        # Si ningún formato funciona, retornar vacío
+        print(f"   ❌ No se pudo procesar formato de conversación: {conversacion_str[:100]}...")
+        return ''
+        
+    except Exception as e:
+        # Capturar cualquier otro error y retornar vacío
+        print(f"   ❌ Error general en extraer_preguntas_usuario: {e}")
+        import traceback
+        print(f"   ❌ TRACEBACK: {traceback.format_exc()}")
+        return ''
+
+def extraer_preguntas_conversaciones(df):
+    """Extrae preguntas de usuario desde conversacion_completa usando la función simplificada del notebook"""
+    try:
+        print(f"   🔍 Iniciando extracción de preguntas para {len(df)} conversaciones")
+        
+        # Contar conversaciones antes del procesamiento
+        total_conversaciones = len(df)
+        conversaciones_con_datos = df['conversacion_completa'].notna().sum()
+        
+        print(f"   📊 Estado inicial:")
+        print(f"      • Total conversaciones: {total_conversaciones}")
+        print(f"      • Con datos de conversación: {conversaciones_con_datos}")
+        
+        # Mostrar algunos ejemplos de formato de conversación para debugging
+        print(f"   📝 EJEMPLOS DE FORMATO DE CONVERSACIÓN:")
+        ejemplos = df[df['conversacion_completa'].notna()]['conversacion_completa'].head(3)
+        for i, ejemplo in enumerate(ejemplos, 1):
+            ejemplo_str = str(ejemplo)[:200] + "..." if len(str(ejemplo)) > 200 else str(ejemplo)
+            print(f"      Ejemplo {i}: {ejemplo_str}")
+        
+        # Procesar y extraer preguntas usando la función del notebook
+        df['pregunta_conversacion'] = df['conversacion_completa'].apply(extraer_preguntas_usuario)
+        
+        # Estadísticas del procesamiento
+        preguntas_extraidas = (df['pregunta_conversacion'] != '').sum()
+        conversaciones_con_preguntas = df[df['pregunta_conversacion'] != '']['pregunta_conversacion'].str.contains('\|', na=False).sum()
+        
+        print(f"   ✅ EXTRACCIÓN COMPLETADA:")
+        print(f"      • Conversaciones con preguntas extraídas: {preguntas_extraidas}")
+        print(f"      • Conversaciones con múltiples preguntas: {conversaciones_con_preguntas}")
+        
+        # Mostrar ejemplos de preguntas extraídas
+        if preguntas_extraidas > 0:
+            print(f"   📝 EJEMPLOS DE PREGUNTAS EXTRAÍDAS:")
+            ejemplos_preguntas = df[df['pregunta_conversacion'] != '']['pregunta_conversacion'].head(3)
+            for i, pregunta in enumerate(ejemplos_preguntas, 1):
+                pregunta_display = pregunta[:100] + "..." if len(pregunta) > 100 else pregunta
+                print(f"      {i}. {pregunta_display}")
+        else:
+            print(f"   ⚠️  NO SE EXTRAJERON PREGUNTAS - Verificar formato de datos")
+            # Intentar un análisis más detallado si no se extrajeron preguntas
+            print(f"   🔍 ANÁLISIS DETALLADO DE FORMATOS:")
+            ejemplos_detalle = df[df['conversacion_completa'].notna()]['conversacion_completa'].head(5)
+            for i, ejemplo in enumerate(ejemplos_detalle, 1):
+                ejemplo_str = str(ejemplo)
+                print(f"      Conversación {i}:")
+                print(f"         Tipo: {type(ejemplo)}")
+                print(f"         Longitud: {len(ejemplo_str)}")
+                print(f"         Contiene pipe: {' | ' in ejemplo_str}")
+                print(f"         Es array JSON: {ejemplo_str.startswith('[') and ejemplo_str.endswith(']')}")
+                print(f"         Es objeto JSON: {ejemplo_str.startswith('{') and ejemplo_str.endswith('}')}")
+                print(f"         Contenido (primeros 150 chars): {ejemplo_str[:150]}...")
+                print("")
+        
+        return df
     except Exception as e:
         print(f"❌ ERROR en extraer_preguntas_conversaciones: {str(e)}")
         import traceback
         print(f"❌ TRACEBACK: {traceback.format_exc()}")
         raise
-
-def extraer_preguntas_usuario_simple(conversacion_json):
-    """Versión simplificada que evita problemas de array ambiguity"""
-    if conversacion_json is None or conversacion_json == '':
-        return ''
-    
-    try:
-        # Convertir a string de forma segura
-        if isinstance(conversacion_json, list):
-            if len(conversacion_json) == 0:
-                return ''
-            conversacion_str = str(conversacion_json[0]) if conversacion_json else ''
-        else:
-            conversacion_str = str(conversacion_json)
-        
-        # Verificar que es JSON válido
-        if not (conversacion_str.strip().startswith('[') and conversacion_str.strip().endswith(']')):
-            return ''
-        
-        # Parsear JSON
-        import json
-        conversacion_data = json.loads(conversacion_str.strip())
-        
-        if not isinstance(conversacion_data, list):
-            return ''
-        
-        # Extraer preguntas de usuario
-        preguntas_usuario = []
-        for mensaje in conversacion_data:
-            if (isinstance(mensaje, dict) and 
-                'from' in mensaje and mensaje['from'] == 'user' and 
-                'text' in mensaje):
-                texto_pregunta = str(mensaje['text']).strip()
-                if texto_pregunta:
-                    preguntas_usuario.append(texto_pregunta)
-        
-        return ' | '.join(preguntas_usuario) if preguntas_usuario else ''
-        
-    except:
-        # Si falla JSON, intentar con ast.literal_eval
-        try:
-            import ast
-            conversacion_data = ast.literal_eval(conversacion_str)
-            if isinstance(conversacion_data, list):
-                preguntas_usuario = []
-                for mensaje in conversacion_data:
-                    if (isinstance(mensaje, dict) and 
-                        mensaje.get('from') == 'user' and 'text' in mensaje):
-                        texto_pregunta = str(mensaje['text']).strip()
-                        if texto_pregunta:
-                            preguntas_usuario.append(texto_pregunta)
-                return ' | '.join(preguntas_usuario) if preguntas_usuario else ''
-        except:
-            pass
-        
-        return ''
 
 def crear_dataset_12_columnas(df):
     """Crea DataFrame con las 12 columnas exactas"""

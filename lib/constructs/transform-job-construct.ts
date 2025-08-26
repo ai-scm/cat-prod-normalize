@@ -130,7 +130,9 @@ export class TransformJobConstruct extends Construct {
         "--partition_mode": "none",
         "--write_mode": "overwrite",
         "--single_file": "true",
-        "--file_name": "dashboard_usuarios_catia_consolidated.parquet"
+        "--file_name": "dashboard_usuarios_catia_consolidated.parquet",
+        // 🎯 Instalar tiktoken para cálculo de tokens GPT-4/GPT-3.5-turbo
+        "--additional-python-modules": "tiktoken>=0.5.0"
       },
       // opcional: tiempo máx / notificación
       timeout: Duration.hours(2).toMinutes(), // Glue espera minutos

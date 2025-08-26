@@ -1,9 +1,16 @@
-# Requirements for Glue Job (ETL-2) - Solo PySpark
+# Requirements for Glue Job (ETL-2) - Solo PySpark + Token Calculation
 # Glue ya incluye pyspark, boto3 por defecto
 # No se incluye pandas ya que usamos solo PySpark
 
+# Para cálculo de tokens GPT-compatible (100% precisión)
+tiktoken>=0.5.1
+
 # Para manipulación avanzada de fechas (si se necesita en el futuro)
 pytz>=2021.3
+
+# Para instalación dinámica y logging mejorado
+structlog>=22.0.0
+requests>=2.25.0
 
 # Para validación de datos (si se necesita en el futuro)
 jsonschema>=4.0.0

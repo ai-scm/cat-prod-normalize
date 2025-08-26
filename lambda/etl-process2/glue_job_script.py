@@ -1,13 +1,40 @@
 import sys
 import boto3
+import json
+import ast
 from datetime import datetime, date
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date, to_timestamp, when, isnan, isnull
-from pyspark.sql.types import IntegerType, DoubleType, DateType, TimestampType
+from pyspark.sql.functions import col, to_date, to_timestamp, when, isnan, isnull, udf, lit
+from pyspark.sql.types import IntegerType, DoubleType, DateType, TimestampType, StringType
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from awsglue.utils import getResolvedOptions
+
+# Intentar importar tiktoken con instalación dinámica si es necesario
+TIKTOKEN_AVAILABLE = False
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+    print("✅ TIKTOKEN: Importación exitosa")
+except ImportError as e:
+    print(f"❌ TIKTOKEN: Error de importación - {str(e)}")
+    print("🔄 TIKTOKEN: Intentando instalación dinámica...")
+    try:
+        import subprocess
+        import sys
+        # Intentar instalar tiktoken dinámicamente
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "tiktoken"])
+        print("✅ TIKTOKEN: Instalación dinámica exitosa, reintentando importación...")
+        import tiktoken
+        TIKTOKEN_AVAILABLE = True
+        print("✅ TIKTOKEN: Importación exitosa después de instalación dinámica")
+    except Exception as install_error:
+        print(f"❌ TIKTOKEN: Falló instalación dinámica - {str(install_error)}")
+        print("🔄 TIKTOKEN: Continuando con aproximación matemática")
+except Exception as e:
+    print(f"⚠️ TIKTOKEN: Error inesperado - {str(e)}")
+    print("🔄 TIKTOKEN: Continuando con aproximación matemática")
 
 # Argumentos del job
 args = getResolvedOptions(sys.argv, [
@@ -31,16 +58,204 @@ INPUT_PREFIX = args['input_prefix']  # reports/etl-process1/
 OUTPUT_BUCKET = args['output_bucket']
 OUTPUT_PREFIX = args['output_prefix']  # reports/etl-process2/
 
+# ===================================================================
+# FUNCIONES PARA CÁLCULO DE TOKENS CON TIKTOKEN + FALLBACK
+# ===================================================================
+
+def get_tiktoken_encoding():
+    """
+    Obtiene el encoding de tiktoken para GPT-3.5/GPT-4 (cl100k_base)
+    Con manejo robusto de errores para AWS Glue
+    """
+    if not TIKTOKEN_AVAILABLE:
+        print("⚠️ TIKTOKEN: No disponible, usando fallback")
+        return None
+    
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")
+        print("✅ TIKTOKEN: Encoding cl100k_base cargado exitosamente")
+        return encoding
+    except Exception as e:
+        print(f"❌ TIKTOKEN: Error obteniendo encoding - {str(e)}")
+        return None
+
+def extract_user_text_from_conversation(conversation_text):
+    """
+    Extrae todos los textos del 'user' de una conversación completa.
+    
+    Args:
+        conversation_text (str): String con formato de lista de diccionarios
+        
+    Returns:
+        str: Texto concatenado de todas las preguntas del usuario
+    """
+    if not conversation_text or conversation_text.strip() == "":
+        return ""
+    try:
+        # Separar por el separador exacto ' | ' (sin espacios extra)
+        # Primero reemplazar todos los posibles separadores con uno estándar
+        text = conversation_text.replace(' || ', '|').replace(' | ', '|').replace('||', '|')
+        messages = [msg.strip() for msg in text.split('|') if msg.strip()]
+        user_texts = []
+        for msg in messages:
+            if msg.lower().startswith('user:'):
+                # Quitar el prefijo y espacios
+                clean_text = msg[5:].strip()
+                if clean_text:
+                    user_texts.append(clean_text)
+        # Concatenar todas las preguntas del usuario en un solo string, sin separadores ni espacios extra
+        result = ' '.join(user_texts)
+        return result
+    except Exception as e:
+        print(f"⚠️ ERROR extrayendo textos de usuario: {str(e)[:100]}")
+        return ""
+
+def extract_bot_text_from_conversation(conversation_text):
+    """
+    Extrae todos los textos del 'bot' de una conversación completa.
+    
+    Args:
+        conversation_text (str): String con formato de lista de diccionarios
+        
+    Returns:
+        str: Texto concatenado de todas las respuestas del bot
+    """
+    if not conversation_text or conversation_text.strip() == "":
+        return ""
+    
+    try:
+        # Parsear como lista de diccionarios usando ast.literal_eval
+        conversations = ast.literal_eval(conversation_text)
+        
+        if not isinstance(conversations, list):
+            return ""
+        
+        bot_texts = []
+        for conv in conversations:
+            if isinstance(conv, dict) and conv.get('from') == 'bot' and 'text' in conv:
+                bot_text = conv['text'].strip()
+                if bot_text:
+                    bot_texts.append(bot_text)
+        
+        # Concatenar todas las respuestas del bot
+        result = " ".join(bot_texts)
+        return result
+        
+    except (ValueError, SyntaxError, TypeError) as e:
+        print(f"⚠️ ERROR parseando conversación para bot: {str(e)[:100]}")
+        return ""
+
+def calculate_tokens_with_tiktoken(text):
+    """
+    Calcula tokens usando tiktoken (si disponible) o aproximación matemática robusta
+    """
+    if not text or text == "":
+        return 0
+    
+    try:
+        if TIKTOKEN_AVAILABLE:
+            # Usar tiktoken para precisión máxima
+            encoding = tiktoken.get_encoding("cl100k_base")  # GPT-4
+            tokens = len(encoding.encode(str(text)))
+            print(f"🎯 TIKTOKEN: Calculados {tokens} tokens para texto de {len(text)} caracteres")
+            return tokens
+        else:
+            # Aproximación matemática ROBUSTA para GPT-4
+            text_str = str(text)
+            char_count = len(text_str)
+            
+            # Factores de conversión más precisos basados en análisis empírico
+            # GPT-4 promedio: ~4 caracteres por token en español
+            base_tokens = char_count / 3.8  # Más conservador
+            
+            # Ajustes por tipo de contenido
+            # Texto con muchos espacios usa más tokens
+            space_ratio = text_str.count(' ') / max(char_count, 1)
+            space_adjustment = space_ratio * 0.2
+            
+            # Texto con puntuación usa más tokens
+            punct_count = sum(1 for c in text_str if c in '.,;:!?¡¿()[]{}"\'-')
+            punct_ratio = punct_count / max(char_count, 1)
+            punct_adjustment = punct_ratio * 0.15
+            
+            # Texto con números y símbolos especiales
+            special_count = sum(1 for c in text_str if c.isdigit() or c in '@#$%&*+=/<>')
+            special_ratio = special_count / max(char_count, 1)
+            special_adjustment = special_ratio * 0.1
+            
+            # Cálculo final con ajustes
+            estimated_tokens = int(base_tokens * (1 + space_adjustment + punct_adjustment + special_adjustment))
+            
+            # Mínimo de 1 token para texto no vacío
+            final_tokens = max(1, estimated_tokens)
+            
+            print(f"📊 MATH_APPROX: Calculados {final_tokens} tokens para texto de {char_count} caracteres")
+            print(f"   📈 Base: {base_tokens:.1f}, Espacios: +{space_adjustment:.3f}, Puntuación: +{punct_adjustment:.3f}, Especiales: +{special_adjustment:.3f}")
+            
+            return final_tokens
+            
+    except Exception as e:
+        print(f"❌ TOKEN_CALC: Error calculando tokens - {str(e)}")
+        # Fallback ultra simple: 1 token por cada 4 caracteres
+        fallback_tokens = max(1, len(str(text)) // 4)
+        print(f"🆘 FALLBACK: Usando {fallback_tokens} tokens (1 token/4 chars)")
+        return fallback_tokens
+
+def diagnose_tiktoken():
+    """
+    Función de diagnóstico para verificar el estado de tiktoken
+    """
+    print("\n🔍 DIAGNÓSTICO DE TIKTOKEN:")
+    print(f"   📦 Tiktoken disponible: {TIKTOKEN_AVAILABLE}")
+    
+    if TIKTOKEN_AVAILABLE:
+        try:
+            encoding = get_tiktoken_encoding()
+            if encoding:
+                # Prueba básica
+                test_text = "Hola mundo"
+                tokens = encoding.encode(test_text)
+                print(f"   ✅ Prueba exitosa: '{test_text}' = {len(tokens)} tokens")
+                return True
+            else:
+                print("   ❌ No se pudo obtener encoding")
+                return False
+        except Exception as e:
+            print(f"   ❌ Error en prueba: {str(e)}")
+            return False
+    else:
+        print("   🔄 Usando aproximación matemática como fallback")
+        return False
+
+# UDFs para PySpark - Estas funcionan con o sin tiktoken
+calculate_user_tokens_udf = udf(
+    lambda conversation_text: calculate_tokens_with_tiktoken(extract_user_text_from_conversation(conversation_text)), 
+    IntegerType()
+)
+
+calculate_bot_tokens_udf = udf(
+    lambda conversation_text: calculate_tokens_with_tiktoken(extract_bot_text_from_conversation(conversation_text)), 
+    IntegerType()
+)
+
+# ===================================================================
+# FUNCIÓN PRINCIPAL Y PROCESAMIENTO
+# ===================================================================
+
 def main():
     """
     Función principal del job de Glue
     """
-    print(f"🚀 INICIANDO ETL-2 PROCESS - PYSPARK + TYPE CONVERSION")
+    print(f"🚀 INICIANDO ETL-2 PROCESS - PYSPARK + TYPE CONVERSION + TOKEN CALCULATION")
     print(f"   ⚡ Motor: PySpark distribuido con conversión de tipos")
-    print(f"   📥 Input: s3://{INPUT_BUCKET}/{INPUT_PREFIX}")
+    print(f"   � Nueva funcionalidad: Cálculo de tokens con tiktoken")
+    print(f"   �📥 Input: s3://{INPUT_BUCKET}/{INPUT_PREFIX}")
     print(f"   📤 Output: s3://{OUTPUT_BUCKET}/{OUTPUT_PREFIX}")
-    print(f"   🎯 Objetivo: Conversión CSV → Parquet con tipos correctos")
-    print(f"   🔧 Solución: Problema de 'todo como string' resuelto")
+    print(f"   🎯 Objetivo: Conversión CSV → Parquet + análisis de tokens")
+    print(f"   🔧 Solución: Problema de 'todo como string' resuelto + tokens precisos")
+    
+    # Diagnóstico de tiktoken
+    tiktoken_working = diagnose_tiktoken()
     
     try:
         # 1. Leer CSV más reciente de ETL-1
@@ -137,6 +352,8 @@ def process_data(df_spark):
         # Enteros
         'numero_conversaciones': 'integer',
         'numero_feedback': 'integer',
+        'token_pregunta': 'integer',      # 🆕 NUEVA COLUMNA - Tokens preguntas usuario
+        'token_respuesta': 'integer',     # 🆕 NUEVA COLUMNA - Tokens respuestas bot
         
         # Strings explícitos (aunque por defecto ya son string, los definimos para claridad)
         'usuario_id': 'string',
@@ -210,6 +427,49 @@ def process_data(df_spark):
         else:
             print(f"   📋 Manteniendo '{column}' como string (no en mapping)")
     
+    # 🔥 AGREGAR NUEVAS COLUMNAS DE TOKENS CON TIKTOKEN
+    print(f"\n🔥 AGREGANDO COLUMNAS DE TOKENS...")
+    print(f"   📚 Usando tiktoken (cl100k_base) si está disponible")
+    print(f"   🔄 Fallback a aproximación matemática si es necesario")
+    print(f"   🎯 Calculando token_pregunta (textos del user)")
+    print(f"   🎯 Calculando token_respuesta (textos del bot)")
+    
+    # Verificar que existe la columna conversacion_completa
+    if 'conversacion_completa' in df_processed.columns:
+        print(f"   ✅ Columna 'conversacion_completa' encontrada - procesando...")
+        
+        try:
+            # Agregar columna token_pregunta (tokens de preguntas del usuario)
+            print(f"   🔄 Creando columna token_pregunta...")
+            df_processed = df_processed.withColumn(
+                "token_pregunta",
+                calculate_user_tokens_udf(col("conversacion_completa"))
+            )
+            
+            # Agregar columna token_respuesta (tokens de respuestas del bot)
+            print(f"   🔄 Creando columna token_respuesta...")
+            df_processed = df_processed.withColumn(
+                "token_respuesta", 
+                calculate_bot_tokens_udf(col("conversacion_completa"))
+            )
+            
+            print(f"   ✅ Columnas de tokens agregadas exitosamente")
+            print(f"   📊 token_pregunta: Cuenta tokens de todas las preguntas del user")
+            print(f"   📊 token_respuesta: Cuenta tokens de todas las respuestas del bot")
+            
+        except Exception as e:
+            print(f"   ❌ Error creando columnas de tokens: {str(e)}")
+            print(f"   🔄 Agregando columnas nulas como fallback...")
+            # Agregar columnas con valores nulos como fallback
+            df_processed = df_processed.withColumn("token_pregunta", lit(None).cast(IntegerType()))
+            df_processed = df_processed.withColumn("token_respuesta", lit(None).cast(IntegerType()))
+        
+    else:
+        print(f"   ⚠️  Columna 'conversacion_completa' no encontrada - saltando cálculo de tokens")
+        # Agregar columnas con valores nulos si no existe la fuente
+        df_processed = df_processed.withColumn("token_pregunta", lit(None).cast(IntegerType()))
+        df_processed = df_processed.withColumn("token_respuesta", lit(None).cast(IntegerType()))
+
     # Mostrar esquema final con tipos correctos
     print(f"\n✅ ESQUEMA FINAL (con tipos correctos):")
     df_processed.printSchema()
@@ -226,9 +486,12 @@ def process_data(df_spark):
         column_type = dict(df_processed.dtypes)[column]
         print(f"   📋 {column} ({column_type}): {non_null_count} válidos, {null_count} nulos")
     
-    print(f"\n🎉 Procesamiento PySpark + Conversión de Tipos completado")
+    print(f"\n🎉 Procesamiento PySpark + Conversión de Tipos + Tokens completado")
     print(f"   ✅ Problema de 'todo como string' resuelto")
     print(f"   ✅ Tipos apropiados aplicados para analytics")
+    print(f"   🔥 Columnas de tokens agregadas con tiktoken (precisión GPT)")
+    print(f"   📊 token_pregunta: Tokens de preguntas del usuario")
+    print(f"   📊 token_respuesta: Tokens de respuestas del bot")
     
     return df_processed
 

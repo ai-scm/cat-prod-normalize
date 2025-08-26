@@ -48,7 +48,7 @@ export class CatalogConstruct extends Construct {
     );
     dataBucket.grantRead(crawlerRole, `${curatedPrefix}*`);
 
-    // Crawler sobre curated/
+    // Crawler sobre curated/ - SOLO carpeta data.parquet
     const crawler = new glue.CfnCrawler(this, "CuratedCrawler", {
       name: crawlerName,
       role: crawlerRole.roleArn,
@@ -56,7 +56,8 @@ export class CatalogConstruct extends Construct {
       targets: {
         s3Targets: [
           {
-            path: `s3://${dataBucket.bucketName}/${curatedPrefix}`,
+            path: `s3://${dataBucket.bucketName}/${curatedPrefix}data.parquet/`,
+            // 🎯 Apunta específicamente a la carpeta del Parquet, no a scripts
           },
         ],
       },

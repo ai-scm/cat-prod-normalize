@@ -31,6 +31,14 @@ export class CatProdNormalizeStack extends cdk.Stack {
     // 📦 S3 Bucket para reportes
     const reportsBucket = this.createS3Bucket(config.s3BucketName);
 
+    // 🏷️ Tags para S3 Bucket
+    cdk.Tags.of(reportsBucket).add('BillingTag', 'ETL-STORAGE');
+    cdk.Tags.of(reportsBucket).add('CostCenter', 'DATA-ANALYTICS');
+    cdk.Tags.of(reportsBucket).add('Project', 'CAT-PROD-NORMALIZE');
+    cdk.Tags.of(reportsBucket).add('Environment', 'PROD');
+    cdk.Tags.of(reportsBucket).add('ETLComponent', 'DATA-LAKE');
+    cdk.Tags.of(reportsBucket).add('ResourceType', 'STORAGE');
+
     // 🔐 IAM Roles
     const etlLambdaRole = this.createETLLambdaRole(reportsBucket, config.dynamoTableName);
 
@@ -44,11 +52,24 @@ export class CatProdNormalizeStack extends cdk.Stack {
     // ⚡ Lambda ETL
     const etlLambda = this.createETLLambda(etlLambdaRole, reportsBucket, config, pythonLayer);
 
-  // Apply tags to Lambda ETL and layer
+    // 🏷️ Tags básicos existentes
     cdk.Tags.of(etlLambda).add('Name', 'cat-prod-lambda-normalize');
     cdk.Tags.of(etlLambda).add('Component', 'lambda-function');
     cdk.Tags.of(etlLambda).add('Purpose', 'data-processing');
     cdk.Tags.of(etlLambda).add('Runtime', 'python3.9');
+
+    // 🏷️ Tags para Cost Explorer y Billing
+    cdk.Tags.of(etlLambda).add('BillingTag', 'ETL-LAMBDA-ETL1');
+    cdk.Tags.of(etlLambda).add('CostCenter', 'DATA-ANALYTICS');
+    cdk.Tags.of(etlLambda).add('Project', 'CAT-PROD-NORMALIZE');
+    cdk.Tags.of(etlLambda).add('Environment', 'PROD');
+    cdk.Tags.of(etlLambda).add('ETLComponent', 'ETL-1');
+    cdk.Tags.of(etlLambda).add('ETLStage', 'EXTRACT-TRANSFORM');
+    cdk.Tags.of(etlLambda).add('DataSource', 'DynamoDB');
+    cdk.Tags.of(etlLambda).add('DataTarget', 'S3-CSV');
+    cdk.Tags.of(etlLambda).add('Owner', 'DataEngineering');
+    cdk.Tags.of(etlLambda).add('BusinessUnit', 'CATIA-OPERATIONS');
+    cdk.Tags.of(etlLambda).add('ResourceType', 'COMPUTE');
 
   // 🕐 TRIGGER 1: EventBridge Schedule - Ejecutar ETL diariamente a las 11:30 PM Colombia
     const dailyETLSchedule = new events.Rule(this, 'DailyETLSchedule', {
@@ -63,6 +84,14 @@ export class CatProdNormalizeStack extends cdk.Stack {
       maxEventAge: cdk.Duration.hours(2),
       retryAttempts: 2
     }));
+
+    // 🏷️ Tags para EventBridge Schedule
+    cdk.Tags.of(dailyETLSchedule).add('BillingTag', 'ETL-SCHEDULER');
+    cdk.Tags.of(dailyETLSchedule).add('CostCenter', 'DATA-ANALYTICS');
+    cdk.Tags.of(dailyETLSchedule).add('Project', 'CAT-PROD-NORMALIZE');
+    cdk.Tags.of(dailyETLSchedule).add('Environment', 'PROD');
+    cdk.Tags.of(dailyETLSchedule).add('ETLComponent', 'ETL-1-SCHEDULER');
+    cdk.Tags.of(dailyETLSchedule).add('ResourceType', 'EVENT-ORCHESTRATION');
 
 
     // 📤 Stack Outputs básicos
@@ -90,15 +119,28 @@ export class CatProdNormalizeStack extends cdk.Stack {
       value: 'EventBridge Schedule → Lambda ETL → S3 Update',
       description: 'Flujo de automatización configurado (QuickSight removido)'
     });
+
+    // 🏷️ Output con Tags para Cost Explorer
+    new cdk.CfnOutput(this, 'CostExplorerTags', {
+      value: JSON.stringify({
+        BillingTag: 'ETL-LAMBDA-ETL1',
+        CostCenter: 'DATA-ANALYTICS',
+        Project: 'CAT-PROD-NORMALIZE',
+        Environment: 'PROD',
+        ETLComponent: 'ETL-1'
+      }),
+      description: 'Tags principales para filtrar en AWS Cost Explorer'
+    });
   }
 
   // 📦 Crear S3 Bucket
   private createS3Bucket(bucketName: string): s3.Bucket {
-    return new s3.Bucket(this, 'CatProdNormalizeReportsBucket', {
+    const bucket = new s3.Bucket(this, 'CatProdNormalizeReportsBucket', {
       bucketName,
       versioned: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      eventBridgeEnabled: true, // ← Habilitar EventBridge para S3 events
       lifecycleRules: [
         {
           id: 'DeleteOldVersions',
@@ -107,6 +149,8 @@ export class CatProdNormalizeStack extends cdk.Stack {
         }
       ]
     });
+    
+    return bucket;
   }
 
   // 🔐 Crear IAM Role para Lambda ETL
@@ -146,7 +190,7 @@ export class CatProdNormalizeStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_9,
       functionName: config.etlLambdaName,
       handler: 'lambda_function.lambda_handler',
-      code: lambda.Code.fromAsset('lambda', {
+      code: lambda.Code.fromAsset('lambda/etl-process1', {
         exclude: ['requirements.txt', '*.pyc', '__pycache__']
       }),
       layers: [pythonLayer],

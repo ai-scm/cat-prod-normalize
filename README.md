@@ -12,16 +12,22 @@ El proyecto toma el notebook `cat-prod-normalize-data.ipynb` que procesa datos d
 4. 💬 **Extrae preguntas** de las conversaciones en formato JSON
 5. 🎯 **Clasifica feedback** (like/dislike/mixed)
 6. 💬 **Extrae respuestas** (comments y options del feedback)
-7. 📊 **Genera archivo Excel** con 12 columnas listo para QuickSight
-8. ☁️ **Sube archivo a S3** para su consumo
+7. 📊 **Genera archivos CSV/Parquet** con 12 columnas para análisis
+8. ☁️ **Sube archivos a S3** para procesamiento ETL-2
 
 ## 🏗️ Arquitectura
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   DynamoDB  │───▶│   Lambda    │───▶│     S3      │───▶│ QuickSight  │
-│ Conversations│    │ Normalize   │    │  Reports    │    │ Dashboard   │
+│   DynamoDB  │───▶│   Lambda    │───▶│     S3      │───▶│   Athena    │
+│ Conversations│    │ ETL-1       │    │  Reports    │    │ Analysis    │
 └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+                                              │
+                                              ▼
+                                      ┌─────────────┐
+                                      │  Glue ETL-2 │
+                                      │  (Parquet)  │
+                                      └─────────────┘
 ```
 
 ## 📁 Estructura del Proyecto

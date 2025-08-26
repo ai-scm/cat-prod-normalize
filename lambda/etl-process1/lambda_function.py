@@ -1143,7 +1143,7 @@ def generar_archivo_csv(df_usuarios_unicos):
 
         s3_client = boto3.client('s3')
         bucket_name = os.environ.get('S3_BUCKET_NAME', 'cat-prod-normalize-reports')
-        s3_key = f"reports/{nombre_archivo}"
+        s3_key = f"reports/etl-process1/{nombre_archivo}"
 
         s3_client.put_object(
             Bucket=bucket_name,

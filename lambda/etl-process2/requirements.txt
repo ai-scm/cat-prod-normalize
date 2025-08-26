@@ -1,0 +1,15 @@
+# Requirements for Glue Job (ETL-2) - Solo PySpark
+# Glue ya incluye pyspark, boto3 por defecto
+# No se incluye pandas ya que usamos solo PySpark
+
+# Para manipulación avanzada de fechas (si se necesita en el futuro)
+pytz>=2021.3
+
+# Para validación de datos (si se necesita en el futuro)
+jsonschema>=4.0.0
+
+# Para logging estructurado
+structlog>=21.1.0
+
+# Nota: PySpark viene preinstalado en AWS Glue
+# Nota: boto3 viene preinstalado en AWS Glue

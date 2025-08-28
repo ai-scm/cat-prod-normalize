@@ -92,20 +92,26 @@ def extract_user_text_from_conversation(conversation_text):
     if not conversation_text or conversation_text.strip() == "":
         return ""
     try:
-        # Separar por el separador exacto ' | ' (sin espacios extra)
-        # Primero reemplazar todos los posibles separadores con uno estándar
+        # Normalizar separadores y limpiar saltos de línea/tabulaciones
         text = conversation_text.replace(' || ', '|').replace(' | ', '|').replace('||', '|')
+        text = text.replace('\n', ' ').replace('\t', ' ')
         messages = [msg.strip() for msg in text.split('|') if msg.strip()]
         user_texts = []
+        user_prefixes = ['user:', 'usuario:', 'usr:', 'u:']
         for msg in messages:
-            if msg.lower().startswith('user:'):
-                # Quitar el prefijo y espacios
-                clean_text = msg[5:].strip()
-                if clean_text:
-                    user_texts.append(clean_text)
-        # Concatenar todas las preguntas del usuario en un solo string, sin separadores ni espacios extra
+            msg_norm = msg.lstrip().lower()
+            for prefix in user_prefixes:
+                if msg_norm.startswith(prefix):
+                    idx = msg.lower().find(prefix)
+                    clean_text = msg[idx+len(prefix):].strip()
+                    if clean_text:
+                        user_texts.append(clean_text)
+                    break
+        # Concatenar y limpiar espacios dobles/triples
         result = ' '.join(user_texts)
-        return result
+        while '  ' in result:
+            result = result.replace('  ', ' ')
+        return result.strip()
     except Exception as e:
         print(f"⚠️ ERROR extrayendo textos de usuario: {str(e)[:100]}")
         return ""
@@ -122,27 +128,27 @@ def extract_bot_text_from_conversation(conversation_text):
     """
     if not conversation_text or conversation_text.strip() == "":
         return ""
-    
     try:
-        # Parsear como lista de diccionarios usando ast.literal_eval
-        conversations = ast.literal_eval(conversation_text)
-        
-        if not isinstance(conversations, list):
-            return ""
-        
+        text = conversation_text.replace(' || ', '|').replace(' | ', '|').replace('||', '|')
+        text = text.replace('\n', ' ').replace('\t', ' ')
+        messages = [msg.strip() for msg in text.split('|') if msg.strip()]
         bot_texts = []
-        for conv in conversations:
-            if isinstance(conv, dict) and conv.get('from') == 'bot' and 'text' in conv:
-                bot_text = conv['text'].strip()
-                if bot_text:
-                    bot_texts.append(bot_text)
-        
-        # Concatenar todas las respuestas del bot
-        result = " ".join(bot_texts)
-        return result
-        
-    except (ValueError, SyntaxError, TypeError) as e:
-        print(f"⚠️ ERROR parseando conversación para bot: {str(e)[:100]}")
+        bot_prefixes = ['bot:', 'assistant:', 'asistente:', 'b:']
+        for msg in messages:
+            msg_norm = msg.lstrip().lower()
+            for prefix in bot_prefixes:
+                if msg_norm.startswith(prefix):
+                    idx = msg.lower().find(prefix)
+                    clean_text = msg[idx+len(prefix):].strip()
+                    if clean_text:
+                        bot_texts.append(clean_text)
+                    break
+        result = ' '.join(bot_texts)
+        while '  ' in result:
+            result = result.replace('  ', ' ')
+        return result.strip()
+    except Exception as e:
+        print(f"⚠️ ERROR extrayendo textos de bot: {str(e)[:100]}")
         return ""
 
 def calculate_tokens_with_tiktoken(text):
@@ -151,52 +157,37 @@ def calculate_tokens_with_tiktoken(text):
     """
     if not text or text == "":
         return 0
-    
     try:
+        # Si el texto es una lista, sumar tokens individuales
+        if isinstance(text, list):
+            total_tokens = 0
+            for t in text:
+                total_tokens += calculate_tokens_with_tiktoken(t)
+            return total_tokens
         if TIKTOKEN_AVAILABLE:
-            # Usar tiktoken para precisión máxima
-            encoding = tiktoken.get_encoding("cl100k_base")  # GPT-4
+            encoding = tiktoken.get_encoding("cl100k_base")
             tokens = len(encoding.encode(str(text)))
             print(f"🎯 TIKTOKEN: Calculados {tokens} tokens para texto de {len(text)} caracteres")
             return tokens
         else:
-            # Aproximación matemática ROBUSTA para GPT-4
             text_str = str(text)
             char_count = len(text_str)
-            
-            # Factores de conversión más precisos basados en análisis empírico
-            # GPT-4 promedio: ~4 caracteres por token en español
-            base_tokens = char_count / 3.8  # Más conservador
-            
-            # Ajustes por tipo de contenido
-            # Texto con muchos espacios usa más tokens
+            base_tokens = char_count / 3.8
             space_ratio = text_str.count(' ') / max(char_count, 1)
             space_adjustment = space_ratio * 0.2
-            
-            # Texto con puntuación usa más tokens
             punct_count = sum(1 for c in text_str if c in '.,;:!?¡¿()[]{}"\'-')
             punct_ratio = punct_count / max(char_count, 1)
             punct_adjustment = punct_ratio * 0.15
-            
-            # Texto con números y símbolos especiales
             special_count = sum(1 for c in text_str if c.isdigit() or c in '@#$%&*+=/<>')
             special_ratio = special_count / max(char_count, 1)
             special_adjustment = special_ratio * 0.1
-            
-            # Cálculo final con ajustes
             estimated_tokens = int(base_tokens * (1 + space_adjustment + punct_adjustment + special_adjustment))
-            
-            # Mínimo de 1 token para texto no vacío
             final_tokens = max(1, estimated_tokens)
-            
             print(f"📊 MATH_APPROX: Calculados {final_tokens} tokens para texto de {char_count} caracteres")
             print(f"   📈 Base: {base_tokens:.1f}, Espacios: +{space_adjustment:.3f}, Puntuación: +{punct_adjustment:.3f}, Especiales: +{special_adjustment:.3f}")
-            
             return final_tokens
-            
     except Exception as e:
         print(f"❌ TOKEN_CALC: Error calculando tokens - {str(e)}")
-        # Fallback ultra simple: 1 token por cada 4 caracteres
         fallback_tokens = max(1, len(str(text)) // 4)
         print(f"🆘 FALLBACK: Usando {fallback_tokens} tokens (1 token/4 chars)")
         return fallback_tokens
@@ -228,13 +219,68 @@ def diagnose_tiktoken():
         return False
 
 # UDFs para PySpark - Estas funcionan con o sin tiktoken
+def extract_user_texts_list(conversation_text):
+    """
+    Devuelve lista de textos de usuario detectados
+    """
+    import re
+    if not conversation_text or conversation_text.strip() == "":
+        print("[DEBUG] Texto de conversación vacío o nulo.")
+        return []
+    try:
+        text = conversation_text.replace(' || ', '|').replace(' | ', '|').replace('||', '|')
+        text = text.replace('\n', ' ').replace('\t', ' ')
+        messages = [msg.strip() for msg in text.split('|') if msg.strip()]
+        user_texts = []
+        user_regex = re.compile(r'^[\s\u200b\ufeff]*(user:|usuario:|usr:|u:)', re.IGNORECASE)
+        for i, msg in enumerate(messages):
+            match = user_regex.match(msg)
+            if match:
+                clean_text = msg[match.end():].strip()
+                if clean_text:
+                    user_texts.append(clean_text)
+                print(f"[DEBUG] Fila {i}: Detectado user -> '{clean_text}'")
+            else:
+                print(f"[DEBUG] Fila {i}: No es user -> '{msg[:50]}...'")
+        print(f"[DEBUG] Textos de usuario extraídos: {user_texts}")
+        return user_texts
+    except Exception as e:
+        print(f"⚠️ ERROR extrayendo lista de textos de usuario: {str(e)[:100]}")
+        return []
+
+def extract_bot_texts_list(conversation_text):
+    """
+    Devuelve lista de textos de bot detectados
+    """
+    if not conversation_text or conversation_text.strip() == "":
+        return []
+    try:
+        text = conversation_text.replace(' || ', '|').replace(' | ', '|').replace('||', '|')
+        text = text.replace('\n', ' ').replace('\t', ' ')
+        messages = [msg.strip() for msg in text.split('|') if msg.strip()]
+        bot_texts = []
+        bot_prefixes = ['bot:', 'assistant:', 'asistente:', 'b:']
+        for msg in messages:
+            msg_norm = msg.lstrip().lower()
+            for prefix in bot_prefixes:
+                if msg_norm.startswith(prefix):
+                    idx = msg.lower().find(prefix)
+                    clean_text = msg[idx+len(prefix):].strip()
+                    if clean_text:
+                        bot_texts.append(clean_text)
+                    break
+        return bot_texts
+    except Exception as e:
+        print(f"⚠️ ERROR extrayendo lista de textos de bot: {str(e)[:100]}")
+        return []
+
 calculate_user_tokens_udf = udf(
-    lambda conversation_text: calculate_tokens_with_tiktoken(extract_user_text_from_conversation(conversation_text)), 
+    lambda conversation_text: calculate_tokens_with_tiktoken(extract_user_texts_list(conversation_text)),
     IntegerType()
 )
 
 calculate_bot_tokens_udf = udf(
-    lambda conversation_text: calculate_tokens_with_tiktoken(extract_bot_text_from_conversation(conversation_text)), 
+    lambda conversation_text: calculate_tokens_with_tiktoken(extract_bot_texts_list(conversation_text)),
     IntegerType()
 )
 

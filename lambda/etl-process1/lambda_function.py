@@ -8,6 +8,7 @@ import os
 from collections import Counter
 import re
 import traceback
+import random
 
 # Columnas finales requeridas (orden exacto para el CSV)
 COLUMNAS_FINALES_12 = [
@@ -510,10 +511,6 @@ def formatear_conversacion_especial(conversacion_data):
                     # Limpiar el texto
                     texto_limpio = text_content.replace('\n\n', ' ').replace('\n', ' ').strip()
                     
-                    # Limitar longitud para evitar strings excesivos
-                    if len(texto_limpio) > 300:
-                        texto_limpio = texto_limpio[:300] + "..."
-                    
                     # Formatear según el tipo de remitente
                     if from_key in ['user', 'usuario']:
                         mensajes_formateados.append(f"user: {texto_limpio}")
@@ -529,8 +526,6 @@ def formatear_conversacion_especial(conversacion_data):
                     
                     # Limpiar texto
                     texto_limpio = text_content.replace('\n\n', ' ').replace('\n', ' ').strip()
-                    if len(texto_limpio) > 300:
-                        texto_limpio = texto_limpio[:300] + "..."
                     
                     # Formatear
                     if from_key in ['user', 'usuario']:
@@ -634,12 +629,6 @@ def extraer_preguntas_implicitas_de_respuesta_bot(respuesta_bot):
                 except Exception as e:
                     continue
         
-        if not preguntas_inferidas:
-            palabras_clave = re.findall(r'\b(?:catastro|certificado|trámite|avalúo|chip|desenglobe|englobe)\b', texto_bot_lower)
-            if palabras_clave:
-                primera_palabra = palabras_clave[0]
-                pregunta_generica = f"Consulta sobre {primera_palabra}"
-                preguntas_inferidas.append(pregunta_generica)
         
     except Exception as e:
         pass

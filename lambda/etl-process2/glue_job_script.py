@@ -5,7 +5,7 @@ import ast
 from datetime import datetime, date
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date, to_timestamp, when, isnan, isnull, udf, lit
+from pyspark.sql.functions import col, to_date, to_timestamp, when, isnan, isnull, udf, lit, lower, trim
 from pyspark.sql.types import IntegerType, DoubleType, DateType, TimestampType, StringType
 from awsglue.context import GlueContext
 from awsglue.job import Job
@@ -308,8 +308,14 @@ def main():
         input_path = f"s3://{INPUT_BUCKET}/{INPUT_PREFIX}"
         print(f"📖 Leyendo CSV desde: {input_path}")
         
-        # Leer usando Spark para mejor rendimiento
-        df_spark = spark.read.option("header", "true").csv(input_path)
+        # Leer usando Spark para mejor rendimiento y soporte de multiline/quoted fields
+        df_spark = spark.read \
+            .option("header", "true") \
+            .option("multiLine", "true") \
+            .option("escape", "\"") \
+            .option("quote", "\"") \
+            .option("delimiter", ",") \
+            .csv(input_path)
         
         total_records = df_spark.count()
         total_columns = len(df_spark.columns)
@@ -421,7 +427,25 @@ def process_data(df_spark):
             print(f"   🔄 Convirtiendo '{column}' → {conversion_type}")
             
             try:
-                if conversion_type == 'date':
+                if column == 'feedback':
+                    # Limitar feedback solo a like, dislike, mixed (normalizando)
+                    df_processed = df_processed.withColumn(
+                        column,
+                        when(
+                            lower(trim(col(column))).isin(['like', 'dislike', 'mixed']),
+                            lower(trim(col(column)))
+                        ).otherwise(None)
+                    )
+                elif column == 'respuesta_feedback':
+                    # Solo mostrar respuesta_feedback si feedback es válido, si no dejar en blanco
+                    df_processed = df_processed.withColumn(
+                        column,
+                        when(
+                            lower(trim(col('feedback'))).isin(['like', 'dislike', 'mixed']),
+                            col(column).cast("string")
+                        ).otherwise(None)
+                    )
+                elif conversion_type == 'date':
                     # Intentar varios formatos de fecha comunes
                     df_processed = df_processed.withColumn(
                         column,

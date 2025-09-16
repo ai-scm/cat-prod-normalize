@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { CatProdNormalizeStack } from '../lib/stacks/cat-prod-normalize-stack';
 import { NewEtlStack } from '../lib/stacks/cad-prod-etl-stack';
+import { CatProdTokensStack } from '../lib/stacks/cat-prod-tokens-stack';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -39,6 +40,13 @@ new NewEtlStack(app, `${appConfig.namespace}-etl2-stack`, {
   athenaResultsPrefix: 'athena/results/',
   glueDatabaseName: 'cat_prod_analytics_db',
   athenaWorkGroup: 'wg-cat-prod-analytics'
+});
+
+// Nuevo Stack para análisis de tokens
+new CatProdTokensStack(app, `${appConfig.namespace}-tokens-stack`, {
+  env: { account: accountConfig.accountId, region: accountConfig.region },
+  namespace: appConfig.namespace,
+  tags: tagsConfig
 });
 
 // 🏷️ Aplicar tags a nivel de aplicación
